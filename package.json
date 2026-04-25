@@ -1,0 +1,77 @@
+{
+  "name": "jobcount-phone-desktop",
+  "version": "1.0.0",
+  "description": "Desktop softphone that turns any PC into a JobCount phone endpoint.",
+  "main": "src/main.js",
+  "author": "JobCount",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "cross-env JOBCOUNT_ENV=dev electron . --enable-logging",
+    "start:prod": "cross-env JOBCOUNT_ENV=prod electron .",
+    "build": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "release": "electron-builder --win --publish=always"
+  },
+  "dependencies": {
+    "@twilio/voice-sdk": "^2.17.0",
+    "electron-updater": "^6.3.9",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.jobcount.phone",
+    "productName": "JobCount Phone",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "CryptoBot-Bot",
+        "repo": "jobcount-phone-desktop",
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "JobCount-Phone-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.business",
+      "artifactName": "JobCount-Phone-${version}.${ext}"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png",
+      "category": "Office",
+      "artifactName": "JobCount-Phone-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "JobCount Phone",
+      "uninstallDisplayName": "JobCount Phone",
+      "differentialPackage": true
+    }
+  }
+}

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>JobCount Phone — Group</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
+  <link rel="stylesheet" href="group.css">
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-title">
+      <span class="dot dot-green" id="groupStatusDot"></span>
+      <strong>Group Call</strong>
+      <span id="groupParticipantCount" class="count">0</span>
+    </div>
+    <button class="btn-close" id="btnCloseWindow" title="Close window">&times;</button>
+  </div>
+
+  <div class="body">
+    <!-- Current agent status banner -->
+    <div class="self-banner" id="selfBanner">
+      <div class="sb-info">
+        <div class="sb-label" id="selfLabel">You</div>
+        <div class="sb-role" id="selfRole">Agent</div>
+      </div>
+    </div>
+
+    <!-- Participants -->
+    <div class="section">
+      <div class="section-head">
+        <strong>Participants</strong>
+        <button class="btn-accent" id="btnInvite" title="Invite another paired device">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          Invite
+        </button>
+      </div>
+      <div class="section-body" id="participantList">
+        <div class="empty">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Footer actions -->
+    <div class="footer">
+      <button class="btn-danger" id="btnLeave">Leave group</button>
+    </div>
+  </div>
+
+  <!-- Invite picker overlay -->
+  <div id="invitePicker" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>Invite to group</strong>
+        <button class="btn-close" id="btnInviteClose">&times;</button>
+      </div>
+
+      <!-- Tabs -->
+      <div class="modal-tabs">
+        <button type="button" class="modal-tab active" data-tab="device">Paired device</button>
+        <button type="button" class="modal-tab" data-tab="number">Phone number</button>
+      </div>
+
+      <!-- Device tab -->
+      <div class="modal-body" id="inviteDeviceBody" data-pane="device">
+        <div class="empty">Loading devices…</div>
+      </div>
+
+      <!-- Phone-number tab -->
+      <div class="modal-body" id="inviteNumberBody" data-pane="number" hidden>
+        <label class="num-label">Phone number</label>
+        <div class="small-hint">
+          They'll get a call from the shop number; once they answer they
+          join the group instantly.
+        </div>
+        <input type="tel" id="inviteNumberInput" placeholder="+1 555 123 4567"
+               autocomplete="off" inputmode="tel">
+        <button type="button" class="btn-accent btn-block" id="btnInviteNumber">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+          </svg>
+          Call & add to group
+        </button>
+        <div class="num-status" id="inviteNumberStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Successor picker overlay (admin leave with >1 agent) -->
+  <div id="successorPicker" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>Hand admin to whom?</strong>
+      </div>
+      <div class="modal-subhead">You're the admin — pick who should take over before you leave.</div>
+      <div class="modal-body" id="successorPickerBody"></div>
+      <div class="modal-foot">
+        <button class="btn-ghost" id="btnSuccessorCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast stack -->
+  <div id="toastStack" class="toast-stack"></div>
+
+  <script src="group.js"></script>
+</body>
+</html>

@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- CSP: we intentionally permit http:/ws: as well as https:/wss: so the
+       app can connect to a local JobCount dev server (http://localhost:4000)
+       alongside remote ngrok / prod HTTPS endpoints. This is an internal
+       desktop app — we control the origins it talks to via the paired
+       server URL. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' http: https: ws: wss: blob: data:; media-src 'self' blob: http: https:; connect-src 'self' http: https: ws: wss:;">
+  <title>JobCount Phone</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Dev-mode ribbon — only visible when the launcher sets JOBCOUNT_ENV=dev -->
+  <div id="devRibbon" class="dev-ribbon" hidden>DEV</div>
+
+  <!-- Toast stack for call-control feedback -->
+  <div id="toastStack" class="toast-stack"></div>
+
+  <!-- ═══ App shell ═══ -->
+  <div id="app">
+
+    <!-- Top bar: always visible -->
+    <header id="topbar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-name">JobCount Phone</div>
+          <div class="brand-sub" id="topbarSub">—</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <div id="statusPill" class="status-pill">
+          <span class="dot dot-gray"></span>
+          <span id="statusText">Loading</span>
+        </div>
+        <div id="updatePill" class="update-pill" hidden title="Click to install update">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span id="updatePillText">Update ready</span>
+        </div>
+        <button class="icon-btn" id="btnSettings" title="Settings" style="display:none;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <button class="icon-btn" id="btnMinimize" title="Minimize to tray">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,14 10,14 10,20"/><polyline points="20,10 14,10 14,4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ═══ SCREEN: loading ═══ -->
+    <section id="screenLoading" class="screen">
+      <div class="center-stack">
+        <div class="pulse-logo">
+          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="hero-title">JobCount Phone</div>
+        <div class="hero-sub" id="loadingSub">Starting up…</div>
+      </div>
+    </section>
+
+    <!-- ═══ SCREEN: pairing ═══ -->
+    <section id="screenPairing" class="screen" hidden>
+      <div class="pair-wrap">
+        <div class="pair-hero">
+          <div class="pair-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <h1>Pair this PC</h1>
+          <p>In JobCount, open your shop's <strong>Phone</strong> page, click <strong>Pair</strong> on the Paired Devices panel, then click <strong>Copy Pairing Info</strong> and paste below.</p>
+        </div>
+
+        <div class="pair-form">
+          <label>Pairing Info</label>
+          <textarea id="pairPayload" rows="3" placeholder="Paste pairing info from JobCount" spellcheck="false"></textarea>
+          <div class="hint">Or type the 6-digit code below if you've paired this server before.</div>
+
+          <div id="pairServerBadge" class="server-badge" style="display:none;">
+            <span class="sb-dot"></span>
+            <span class="sb-text"></span>
+          </div>
+
+          <label style="margin-top:14px;">Code</label>
+          <input type="text" id="pairCode" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" spellcheck="false">
+
+          <label style="margin-top:14px;">Device Label (optional)</label>
+          <input type="text" id="pairLabel" maxlength="60" placeholder="Front Desk PC">
+
+          <button id="btnSubmitPair" class="btn-primary btn-block">
+            <span>Pair Device</span>
+          </button>
+
+          <div id="pairStatus" class="pair-status"></div>
+
+          <details class="advanced-toggle">
+            <summary>Advanced: manual server URL</summary>
+            <input type="url" id="pairServerUrl" placeholder="https://your-jobcount.example.com" autocomplete="off">
+            <div class="hint">Only needed if you're pairing without using the JobCount "Copy" button.</div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ SCREEN: softphone ═══ -->
+    <section id="screenPhone" class="screen" hidden>
+
+      <!-- Call hero -->
+      <div class="call-hero" id="callHero">
+        <div class="call-label" id="callLabel">Ready</div>
+        <div class="call-title" id="callTitle">Waiting for calls…</div>
+        <div class="call-meta" id="callMeta"></div>
+        <div class="call-timer" id="callTimer" hidden>0:00</div>
+      </div>
+
+      <!-- Call control buttons -->
+      <div class="call-controls">
+        <div class="call-ctl">
+          <button id="btnAnswer" class="circle-btn btn-answer" disabled>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          </button>
+          <div class="ctl-label">Answer</div>
+        </div>
+        <div class="call-ctl">
+          <button id="btnReject" class="circle-btn btn-reject" disabled>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <div class="ctl-label">Reject</div>
+        </div>
+        <div class="call-ctl">
+          <button id="btnHangup" class="circle-btn btn-hangup" disabled>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" transform="rotate(135 12 12)"/></svg>
+          </button>
+          <div class="ctl-label">Hangup</div>
+        </div>
+      </div>
+
+      <!-- Secondary row: mute + hold (active during a call) -->
+      <div class="mute-row">
+        <button id="btnMute" class="pill-btn" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          <span id="muteLabel">Mute</span>
+        </button>
+        <button id="btnHold" class="pill-btn" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+          <span id="holdLabel">Hold</span>
+        </button>
+        <button id="btnTransfer" class="pill-btn" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+          <span id="transferLabel">Transfer</span>
+        </button>
+        <button id="btnGroup" class="pill-btn" disabled title="Start a group conference with other paired devices">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span id="groupLabel">Group</span>
+        </button>
+      </div>
+
+      <!-- Transfer picker — small overlay anchored inside the phone screen.
+           Shown only when the user clicks Transfer during an active call. -->
+      <div id="transferPicker" class="transfer-picker" hidden>
+        <div class="transfer-picker-head">
+          <strong>Transfer call to…</strong>
+          <button class="transfer-picker-close" id="btnTransferClose">×</button>
+        </div>
+        <div id="transferPickerBody" class="transfer-picker-body">
+          <div class="transfer-empty">Loading devices…</div>
+        </div>
+      </div>
+
+      <!-- ═══ LIVE QUEUE — callers waiting to be answered ═══ -->
+      <div class="live-section" id="sectionQueue">
+        <div class="live-section-head">
+          <div class="live-section-title">
+            <span class="dot dot-queue"></span>
+            <strong>Live Queue</strong>
+            <span id="queueCount" class="live-count">0</span>
+          </div>
+          <button id="btnAnswerNext" class="btn-accent" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            Answer Next
+          </button>
+        </div>
+        <div class="live-section-body" id="queueList">
+          <div class="live-empty">No callers waiting.</div>
+        </div>
+      </div>
+
+      <!-- ═══ ON HOLD — calls any agent has parked ═══ -->
+      <div class="live-section" id="sectionHeld">
+        <div class="live-section-head">
+          <div class="live-section-title">
+            <span class="dot dot-held"></span>
+            <strong>On Hold</strong>
+            <span id="heldCount" class="live-count">0</span>
+          </div>
+        </div>
+        <div class="live-section-body" id="heldList">
+          <div class="live-empty">Nobody on hold.</div>
+        </div>
+      </div>
+
+      <!-- ═══ TABS: Recents | Contacts | Keypad | Group ═══ -->
+      <div class="tab-panels">
+        <!-- Recents -->
+        <div class="tab-panel" data-tab-panel="recents" hidden>
+          <div class="tab-head">
+            <strong>Recent calls</strong>
+            <button class="btn-link-sm" id="btnRecentsRefresh" title="Refresh">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
+            </button>
+          </div>
+          <div class="tab-body" id="recentsList">
+            <div class="tab-empty">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Contacts -->
+        <div class="tab-panel" data-tab-panel="contacts" hidden>
+          <div class="tab-head">
+            <input type="search" id="contactsSearch" class="tab-search" placeholder="Search contacts…">
+          </div>
+          <div class="tab-body" id="contactsList">
+            <div class="tab-empty">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Keypad -->
+        <div class="tab-panel" data-tab-panel="keypad">
+          <div class="dial-screen">
+            <input type="text" id="dialInput" placeholder="Enter number" autocomplete="off" spellcheck="false">
+            <div class="keypad">
+              <button class="key">1<span>&nbsp;</span></button>
+              <button class="key">2<span>ABC</span></button>
+              <button class="key">3<span>DEF</span></button>
+              <button class="key">4<span>GHI</span></button>
+              <button class="key">5<span>JKL</span></button>
+              <button class="key">6<span>MNO</span></button>
+              <button class="key">7<span>PQRS</span></button>
+              <button class="key">8<span>TUV</span></button>
+              <button class="key">9<span>WXYZ</span></button>
+              <button class="key">*<span>&nbsp;</span></button>
+              <button class="key">0<span>+</span></button>
+              <button class="key">#<span>&nbsp;</span></button>
+            </div>
+            <div class="dial-row">
+              <button class="flat-btn" id="btnBackspace">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/></svg>
+              </button>
+              <button class="btn-primary" id="btnDial">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px;"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                Call
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group initiation -->
+        <div class="tab-panel" data-tab-panel="group" hidden>
+          <div class="tab-head">
+            <strong>Start a group call</strong>
+          </div>
+          <div class="tab-body">
+            <div class="group-init-hint">
+              Select paired devices and/or add phone numbers, then press
+              <b>Start Group</b>. Everyone's phone rings and joins the
+              same conversation.
+            </div>
+            <div class="group-init-section">
+              <div class="gis-title">Paired devices</div>
+              <div id="groupInitDevices" class="gis-list">
+                <div class="tab-empty">Loading…</div>
+              </div>
+            </div>
+            <div class="group-init-section">
+              <div class="gis-title">Phone numbers</div>
+              <div id="groupInitNumbers" class="gis-list"></div>
+              <div class="gis-add-row">
+                <input type="tel" id="groupInitNumInput" placeholder="+1 555 123 4567">
+                <button class="btn-mini" id="btnGroupInitAddNum">Add</button>
+              </div>
+            </div>
+            <button class="btn-primary btn-block" id="btnStartGroup" disabled>
+              Start Group
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab bar -->
+      <nav class="tab-bar">
+        <button class="tab-btn" data-tab="recents">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span>Recents</span>
+        </button>
+        <button class="tab-btn" data-tab="contacts">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>Contacts</span>
+        </button>
+        <button class="tab-btn active" data-tab="keypad">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="4" height="4"/><rect x="10" y="3" width="4" height="4"/><rect x="17" y="3" width="4" height="4"/><rect x="3" y="10" width="4" height="4"/><rect x="10" y="10" width="4" height="4"/><rect x="17" y="10" width="4" height="4"/><rect x="3" y="17" width="4" height="4"/><rect x="10" y="17" width="4" height="4"/><rect x="17" y="17" width="4" height="4"/></svg>
+          <span>Keypad</span>
+        </button>
+        <button class="tab-btn" data-tab="group">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>Group</span>
+        </button>
+      </nav>
+    </section>
+
+    <!-- ═══ SCREEN: settings ═══ -->
+    <section id="screenSettings" class="screen" hidden>
+      <div class="settings-wrap">
+        <h2 class="settings-title">Settings</h2>
+
+        <div class="settings-group">
+          <label>Device Label</label>
+          <input type="text" id="settingsLabel" maxlength="60">
+          <div class="hint">How this device appears in JobCount.</div>
+        </div>
+
+        <div class="settings-group">
+          <label>Microphone</label>
+          <select id="selectMicrophone"></select>
+        </div>
+
+        <div class="settings-group">
+          <label>Speaker</label>
+          <select id="selectSpeaker"></select>
+          <div class="hint">Choose your USB handset or headset from the dropdowns.</div>
+        </div>
+
+        <div class="settings-group settings-group-info">
+          <div class="info-row"><span>Shop</span><strong id="settingsShop">—</strong></div>
+          <div class="info-row"><span>Device ID</span><code id="settingsDeviceId">—</code></div>
+          <div class="info-row"><span>Server</span><code id="settingsServer">—</code></div>
+          <div class="info-row"><span>App Version</span><code id="settingsAppVersion">—</code></div>
+        </div>
+
+        <div class="settings-group">
+          <div class="update-status" id="updateStatus">Checking for updates…</div>
+          <div class="update-actions">
+            <button id="btnCheckUpdates" class="btn-ghost-sm">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
+              Check now
+            </button>
+            <button id="btnInstallUpdate" class="btn-primary-sm" hidden>Install &amp; Restart</button>
+          </div>
+        </div>
+
+        <div class="settings-group" style="display:flex; gap:8px;">
+          <button id="btnSaveSettings" class="btn-primary">Save</button>
+          <button id="btnBackFromSettings" class="btn-ghost">Back</button>
+        </div>
+
+        <div class="settings-group">
+          <button id="btnUnpair" class="btn-danger">Unpair this device</button>
+          <div class="hint">Clears the stored token. You'll need a new pairing code to reconnect.</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Twilio Voice SDK (UMD bundle from the npm package) -->
+  <script src="../../node_modules/@twilio/voice-sdk/dist/twilio.min.js"></script>
+
+  <!-- socket.io-client (UMD bundle) for real-time presence + events -->
+  <script src="../../node_modules/socket.io-client/dist/socket.io.min.js"></script>
+
+  <script src="app.js"></script>
+</body>
+</html>

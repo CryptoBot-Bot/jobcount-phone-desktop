@@ -1,0 +1,57 @@
+# GitHub Actions workflow: build + publish a Windows installer whenever
+# we tag a new version.
+#
+# Triggers:
+#   - Any tag matching v*.*.* (e.g. v1.0.0, v1.2.3-beta.4)
+#   - Manual run from the Actions tab (workflow_dispatch)
+#
+# What it does:
+#   1. Checks out the repo on a Windows runner
+#   2. Installs Node + dependencies
+#   3. Runs electron-builder which produces the installer + latest.yml
+#   4. Uploads all artifacts to a GitHub Release for that tag
+#      (electron-builder handles this via `publish=always` + GH_TOKEN)
+#
+# The desktop app (electron-updater) reads from that Release feed on
+# startup, so every tagged commit here becomes an available update
+# within ~5 minutes of being published.
+#
+# Prerequisites in the repo:
+#   - No extra secrets needed for public repos — GITHUB_TOKEN is
+#     automatically provided by GitHub Actions with write permission
+#     to Releases via the `permissions.contents: write` block below.
+#   - Later, if you add a code-signing certificate, drop its files +
+#     password into repo secrets (CSC_LINK, CSC_KEY_PASSWORD) and
+#     electron-builder picks them up automatically.
+
+name: Release JobCount Phone
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build + publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run release
