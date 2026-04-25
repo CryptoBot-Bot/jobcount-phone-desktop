@@ -1897,6 +1897,90 @@
     } catch {}
   })();
 
+  // ═══════════════ DEV-ONLY: Publish Update panel ═══════════════
+  // Lives in the Settings tab. Lets you bump version + push tag
+  // without leaving the app — kicks off the GitHub Actions release
+  // workflow which produces an installer that production devices
+  // auto-update to.
+  const devPublishPanel  = document.getElementById("devPublishPanel");
+  const devCurrentVersion = document.getElementById("devCurrentVersion");
+  const devReadiness     = document.getElementById("devReadiness");
+  const devPublishLog    = document.getElementById("devPublishLog");
+  const devPublishButtons = devPublishPanel
+    ? devPublishPanel.querySelectorAll("button[data-bump]")
+    : [];
+
+  async function refreshPublishReadiness() {
+    if (!devPublishPanel) return;
+    let r = null;
+    try { r = await window.jobcountPhone.publishReadiness?.(); } catch {}
+    if (!r || !r.isDev) {
+      devPublishPanel.hidden = true;
+      return;
+    }
+    devPublishPanel.hidden = false;
+    devCurrentVersion.textContent = `v${r.currentVersion || "?"}`;
+    if (r.ready) {
+      devReadiness.className = "dev-readiness ok";
+      devReadiness.textContent = "Ready to publish.";
+      devPublishButtons.forEach((b) => { b.disabled = false; });
+    } else {
+      devReadiness.className = "dev-readiness blocked";
+      devReadiness.textContent = "Cannot publish:\n" +
+        (r.reasons || []).join("\n");
+      devPublishButtons.forEach((b) => { b.disabled = true; });
+    }
+  }
+
+  function appendPublishLog(line, kind) {
+    if (!devPublishLog) return;
+    devPublishLog.hidden = false;
+    const span = document.createElement("span");
+    span.className = `log-${kind || "out"}`;
+    span.textContent = line + "\n";
+    devPublishLog.appendChild(span);
+    devPublishLog.scrollTop = devPublishLog.scrollHeight;
+  }
+
+  if (devPublishPanel) {
+    // Subscribe once; the handler stays for the app's lifetime.
+    try {
+      window.jobcountPhone.onPublishLog?.((payload) => {
+        if (!payload) return;
+        appendPublishLog(payload.line, payload.kind);
+      });
+    } catch {}
+
+    devPublishButtons.forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const bump = btn.getAttribute("data-bump");
+        if (!bump) return;
+        if (!confirm(`Publish a ${bump} version bump? This will create + push a new git tag and start the GitHub Actions build.`)) return;
+
+        devPublishButtons.forEach((b) => { b.disabled = true; });
+        if (devPublishLog) devPublishLog.innerHTML = "";
+        appendPublishLog(`▶ Starting ${bump} release…`, "step");
+        try {
+          const result = await window.jobcountPhone.publishUpdate({ bump });
+          if (result?.ok) {
+            appendPublishLog(`\n✓ Published ${result.tagName}`, "ok");
+            toast(`Published ${result.tagName} — GitHub Actions building`, "success", 4000);
+          } else {
+            appendPublishLog(`\n✗ Publish failed: ${result?.error || "unknown"}`, "fail");
+          }
+        } catch (e) {
+          appendPublishLog(`\n✗ Publish errored: ${e.message}`, "fail");
+        }
+        // Re-check readiness — version moved, working tree clean again.
+        await refreshPublishReadiness();
+      });
+    });
+  }
+
+  // Kick once at startup so the panel appears on the very first
+  // settings open without a delay.
+  refreshPublishReadiness();
+
   // ─── Kick off ──────────────────────────────────────────────────
   boot().catch((e) => {
     console.error("Boot failed:", e);

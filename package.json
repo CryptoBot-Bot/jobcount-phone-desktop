@@ -10,6 +10,9 @@
     "start": "electron .",
     "dev": "cross-env JOBCOUNT_ENV=dev electron . --enable-logging",
     "start:prod": "cross-env JOBCOUNT_ENV=prod electron .",
+    "build-icons": "node scripts/build-icons.js",
+    "prebuild": "npm run build-icons",
+    "prerelease": "npm run build-icons",
     "build": "electron-builder --win",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
@@ -23,7 +26,9 @@
   "devDependencies": {
     "cross-env": "^7.0.3",
     "electron": "^34.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "png-to-ico": "^2.1.8",
+    "sharp": "^0.33.5"
   },
   "build": {
     "appId": "com.jobcount.phone",
@@ -48,15 +53,18 @@
       "target": [
         "nsis"
       ],
+      "icon": "assets/icon.ico",
       "artifactName": "JobCount-Phone-Setup-${version}.${ext}"
     },
     "mac": {
       "target": "dmg",
+      "icon": "assets/icon.png",
       "category": "public.app-category.business",
       "artifactName": "JobCount-Phone-${version}.${ext}"
     },
     "linux": {
       "target": "AppImage",
+      "icon": "assets/icon.png",
       "category": "Office",
       "artifactName": "JobCount-Phone-${version}.${ext}"
     },

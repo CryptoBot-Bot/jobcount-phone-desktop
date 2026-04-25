@@ -51,4 +51,15 @@ contextBridge.exposeInMainWorld("jobcountPhone", {
   checkForUpdates:   () => ipcRenderer.invoke("app:check-for-updates"),
   installUpdateNow:  () => ipcRenderer.invoke("app:install-update-now"),
   getUpdateState:    () => ipcRenderer.invoke("app:get-update-state"),
+
+  // Dev-only: bump version + commit + tag + push to trigger a release.
+  // Returns { ok, jobId, version, tagName } when complete; renderer
+  // subscribes to onPublishLog for live progress.
+  publishUpdate:     (payload) => ipcRenderer.invoke("app:publish-update", payload),
+  publishReadiness:  () => ipcRenderer.invoke("app:publish-readiness"),
+  onPublishLog: (handler) => {
+    const listener = (_evt, payload) => { try { handler(payload); } catch {} };
+    ipcRenderer.on("app:publish-log", listener);
+    return () => ipcRenderer.removeListener("app:publish-log", listener);
+  },
 });

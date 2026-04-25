@@ -358,6 +358,27 @@
           <button id="btnBackFromSettings" class="btn-ghost">Back</button>
         </div>
 
+        <!-- Dev-only "Publish Update" panel. Hidden in production
+             builds (visible only when JOBCOUNT_ENV=dev). -->
+        <div id="devPublishPanel" class="settings-group dev-publish-panel" hidden>
+          <div class="dev-panel-title">
+            <span class="dev-badge">DEV</span>
+            <strong>Publish Update</strong>
+          </div>
+          <div class="hint">Bumps the version, commits + tags + pushes — triggers GitHub Actions to build a new installer that all production devices auto-update to.</div>
+          <div class="dev-version-row">
+            <span>Current version</span>
+            <code id="devCurrentVersion">?</code>
+          </div>
+          <div class="dev-readiness" id="devReadiness"></div>
+          <div class="dev-publish-actions">
+            <button class="btn-ghost-sm" data-bump="patch" disabled>Patch (1.0.0 → 1.0.1)</button>
+            <button class="btn-ghost-sm" data-bump="minor" disabled>Minor (1.0.0 → 1.1.0)</button>
+            <button class="btn-ghost-sm" data-bump="major" disabled>Major (1.0.0 → 2.0.0)</button>
+          </div>
+          <pre id="devPublishLog" class="dev-publish-log" hidden></pre>
+        </div>
+
         <div class="settings-group">
           <button id="btnUnpair" class="btn-danger">Unpair this device</button>
           <div class="hint">Clears the stored token. You'll need a new pairing code to reconnect.</div>

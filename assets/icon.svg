@@ -1,17 +1,43 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0d6efd"/>
-      <stop offset="100%" stop-color="#6f42c1"/>
+      <stop offset="0%"  stop-color="#0ea5e9"/>
+      <stop offset="55%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#1e3a8a"/>
     </linearGradient>
     <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3"/>
-      <stop offset="60%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0%"  stop-color="#ffffff" stop-opacity="0.32"/>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
+    <radialGradient id="hi" cx="0.18" cy="0.16" r="0.65">
+      <stop offset="0%"  stop-color="#ffffff" stop-opacity="0.5"/>
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softShadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
+      <feOffset dx="0" dy="6" result="offsetblur"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
   </defs>
+
+  <!-- Rounded-square base with subtle gloss -->
   <rect width="512" height="512" rx="112" fill="url(#bg)"/>
   <rect width="512" height="512" rx="112" fill="url(#gloss)"/>
-  <g transform="translate(96 96)" fill="none" stroke="#fff" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M316 236v44c0 20-16 36-36 36a252 252 0 0 1-110-40 250 250 0 0 1-76-76 252 252 0 0 1-40-110c0-20 16-36 36-36h44c18 0 33 13 36 31 2 14 6 27 10 40a30 30 0 0 1-7 31l-18 18a216 216 0 0 0 84 84l18-18a30 30 0 0 1 31-7c13 4 26 8 40 10 18 3 31 18 31 36z"/>
+  <rect width="512" height="512" rx="112" fill="url(#hi)"/>
+
+  <!-- Phone handset with motion arc behind it (signal/ringing visual) -->
+  <g filter="url(#softShadow)">
+    <!-- Three signal arcs above-right of the phone -->
+    <g fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" opacity="0.78">
+      <path d="M 320 168 a 56 56 0 0 1 56 56" />
+      <path d="M 296 134 a 96 96 0 0 1 96 96" opacity="0.55"/>
+      <path d="M 272 100 a 136 136 0 0 1 136 136" opacity="0.32"/>
+    </g>
+
+    <!-- Handset glyph -->
+    <path
+      d="M 332 332 v 38 c 0 17 -13 30 -30 30 a 230 230 0 0 1 -100 -36 a 228 228 0 0 1 -68 -68 a 230 230 0 0 1 -36 -100 c 0 -17 13 -30 30 -30 h 38 c 15 0 28 11 30 26 c 2 12 5 23 9 34 a 26 26 0 0 1 -6 26 l -16 16 a 196 196 0 0 0 76 76 l 16 -16 a 26 26 0 0 1 26 -6 c 11 4 22 7 34 9 c 15 2 26 15 26 30 z"
+      fill="#ffffff"/>
   </g>
 </svg>

@@ -97,14 +97,38 @@ function createMainWindow() {
     return;
   }
 
+  // Window position: persist last-known coordinates between launches so
+  // the user's manual placement survives. First launch lands in the
+  // top-left of the primary display per the user's request — neat,
+  // predictable starting point that doesn't fight with other apps.
+  const savedPos = (() => {
+    const cfg = loadConfig();
+    return cfg.windowPos && Number.isFinite(cfg.windowPos.x) && Number.isFinite(cfg.windowPos.y)
+      ? cfg.windowPos
+      : { x: 0, y: 0 };
+  })();
+
+  // Pick the platform-appropriate icon. On Windows electron-builder
+  // bakes the .ico into the .exe and BrowserWindow gets it implicitly,
+  // but we set it explicitly here so dev runs (electron .) also have
+  // the branded icon in the taskbar.
+  const iconPath = path.join(__dirname, "..", "assets",
+    process.platform === "win32" ? "icon.ico" : "icon.png");
+  const windowIcon = (() => {
+    try { return fs.existsSync(iconPath) ? iconPath : undefined; } catch { return undefined; }
+  })();
+
   mainWindow = new BrowserWindow({
     width: 420,
     height: 720,
+    x: savedPos.x,
+    y: savedPos.y,
     minWidth: 380,
     minHeight: 600,
     backgroundColor: "#0f172a",
     title: "JobCount Phone",
     autoHideMenuBar: true,
+    icon: windowIcon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -112,6 +136,23 @@ function createMainWindow() {
       sandbox: true,
     },
   });
+
+  // Persist window position on move so next launch opens where the
+  // user left it. Debounce to avoid hammering disk during drags.
+  let _moveTimer = null;
+  const persistPos = () => {
+    if (_moveTimer) clearTimeout(_moveTimer);
+    _moveTimer = setTimeout(() => {
+      try {
+        const [x, y] = mainWindow.getPosition();
+        const cfg = loadConfig();
+        cfg.windowPos = { x, y };
+        saveConfig(cfg);
+      } catch (e) { /* noop */ }
+    }, 400);
+  };
+  mainWindow.on("move", persistPos);
+  mainWindow.on("moved", persistPos);
 
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 
@@ -138,15 +179,21 @@ function createMainWindow() {
 }
 
 function createTray() {
-  // Minimal 16x16 white phone glyph as base64 PNG. Replace with a real
-  // ICO once we have branded assets — Electron accepts PNG buffers here.
-  const iconPath = path.join(__dirname, "..", "assets", "tray-icon.png");
-  let image;
-  try {
-    image = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
-  } catch {
-    image = nativeImage.createEmpty();
+  // Use the same icon we ship for the window — Electron auto-resizes
+  // for the tray (16×16 / 32×32 on hi-DPI). Falls back gracefully if
+  // the raster isn't generated yet (first dev run, e.g.).
+  const candidates = [
+    path.join(__dirname, "..", "assets", "tray-icon.png"),
+    path.join(__dirname, "..", "assets",
+      process.platform === "win32" ? "icon.ico" : "icon.png"),
+  ];
+  let image = null;
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) { image = nativeImage.createFromPath(p); break; }
+    } catch {}
   }
+  if (!image) image = nativeImage.createEmpty();
 
   tray = new Tray(image);
   tray.setToolTip("JobCount Phone");
@@ -485,6 +532,149 @@ ipcMain.handle("app:get-update-state", () => ({
   version: app.getVersion(),
   last: _updaterLastEvent,
 }));
+
+// ── Dev-only: Publish Update flow ──────────────────────────────────
+//
+// When running from source (npm run dev / JOBCOUNT_ENV=dev), the
+// settings tab exposes a "Publish Update" panel. Pressing it bumps
+// the version, commits the change, creates a v<version> tag, and
+// pushes to origin — which fires the GitHub Actions release workflow
+// and ultimately makes the new installer + auto-update payload
+// available to every installed Phone App on the network.
+//
+// We stream every git/npm command's stdout+stderr back to the
+// renderer so the user sees real progress. Only enabled when
+// JOBCOUNT_ENV=dev to avoid shipping git operations in production
+// installer builds.
+
+const _publishStreams = new Map(); // jobId → { proc, listeners: Set<sender> }
+
+function _isDevMode() {
+  return (process.env.JOBCOUNT_ENV || "").toLowerCase() === "dev";
+}
+
+function _streamLine(jobId, kind, line) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.webContents.send("app:publish-log", { jobId, kind, line });
+  } catch {}
+}
+
+// Run a single child-process step, piping stdout/stderr to the
+// renderer in real time. Resolves with exit code.
+function _runStep(jobId, label, command, args, opts = {}) {
+  return new Promise((resolve) => {
+    _streamLine(jobId, "step", `\n$ ${label}`);
+    const { spawn } = require("child_process");
+    const proc = spawn(command, args, {
+      cwd: path.resolve(__dirname, ".."),
+      env: process.env,
+      shell: process.platform === "win32",
+      ...opts,
+    });
+    proc.stdout.on("data", (b) =>
+      String(b).split(/\r?\n/).filter(Boolean).forEach((l) => _streamLine(jobId, "out", l))
+    );
+    proc.stderr.on("data", (b) =>
+      String(b).split(/\r?\n/).filter(Boolean).forEach((l) => _streamLine(jobId, "err", l))
+    );
+    proc.on("close", (code) => {
+      _streamLine(jobId, code === 0 ? "ok" : "fail", `[exit ${code}]`);
+      resolve(code);
+    });
+    proc.on("error", (e) => {
+      _streamLine(jobId, "fail", `spawn error: ${e.message}`);
+      resolve(-1);
+    });
+  });
+}
+
+ipcMain.handle("app:publish-update", async (_evt, payload) => {
+  if (!_isDevMode()) {
+    return { ok: false, error: "Publish Update is only available in dev mode" };
+  }
+  const bump = String(payload?.bump || "patch").toLowerCase();
+  if (!["patch", "minor", "major"].includes(bump)) {
+    return { ok: false, error: "Invalid bump type — expected patch / minor / major" };
+  }
+
+  const jobId = `pub_${Date.now()}`;
+  _streamLine(jobId, "step", `Publishing update — ${bump} bump`);
+
+  // 1. Bump version in package.json (no auto git tag — we do that by hand
+  //    so we control the commit message).
+  const npmBumpOk = await _runStep(jobId, `npm version ${bump} --no-git-tag-version`,
+    "npm", ["version", bump, "--no-git-tag-version"]);
+  if (npmBumpOk !== 0) return { ok: false, jobId, error: "Version bump failed" };
+
+  // 2. Read the new version that was just written.
+  const pkg = JSON.parse(fs.readFileSync(
+    path.resolve(__dirname, "..", "package.json"), "utf8"));
+  const newVersion = pkg.version;
+  const tagName = `v${newVersion}`;
+  _streamLine(jobId, "step", `New version: ${newVersion}`);
+
+  // 3. Git: commit the package.json/lock change, tag, push branch + tag.
+  const steps = [
+    ["git add package.json package-lock.json",
+      "git", ["add", "package.json", "package-lock.json"]],
+    [`git commit -m "Release ${tagName}"`,
+      "git", ["commit", "-m", `Release ${tagName}`]],
+    [`git tag ${tagName}`,
+      "git", ["tag", tagName]],
+    ["git push origin HEAD",
+      "git", ["push", "origin", "HEAD"]],
+    [`git push origin ${tagName}`,
+      "git", ["push", "origin", tagName]],
+  ];
+  for (const [label, cmd, args] of steps) {
+    const code = await _runStep(jobId, label, cmd, args);
+    if (code !== 0) {
+      return { ok: false, jobId, version: newVersion, tagName,
+        error: `Step failed: ${label}` };
+    }
+  }
+
+  _streamLine(jobId, "ok", `\n✓ Tag ${tagName} pushed. GitHub Actions is now building.`);
+  _streamLine(jobId, "ok",
+    `Watch progress: https://github.com/CryptoBot-Bot/jobcount-phone-desktop/actions`);
+  _streamLine(jobId, "ok",
+    `Release will appear at: https://github.com/CryptoBot-Bot/jobcount-phone-desktop/releases/tag/${tagName}`);
+  return { ok: true, jobId, version: newVersion, tagName };
+});
+
+// Quick check whether the dev environment is in a state where a
+// publish would even succeed (clean working tree, has git remote,
+// etc.). Renderer hits this on tab open to show readiness/blockers.
+ipcMain.handle("app:publish-readiness", async () => {
+  if (!_isDevMode()) {
+    return { ready: false, isDev: false, reasons: ["Not in dev mode"] };
+  }
+  const { execSync } = require("child_process");
+  const cwd = path.resolve(__dirname, "..");
+  const reasons = [];
+
+  try {
+    const status = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
+    if (status) reasons.push(`Working tree has uncommitted changes:\n${status}`);
+  } catch (e) {
+    reasons.push("Not a git repo (or git not on PATH)");
+  }
+  try {
+    const remote = execSync("git remote get-url origin", { cwd, encoding: "utf8" }).trim();
+    if (!remote) reasons.push("No 'origin' remote configured");
+  } catch {
+    reasons.push("Could not read 'origin' remote");
+  }
+
+  let currentVersion = "?";
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
+    currentVersion = pkg.version;
+  } catch {}
+
+  return { ready: reasons.length === 0, isDev: true, currentVersion, reasons };
+});
 
 app.whenReady().then(() => {
   createTray();

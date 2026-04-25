@@ -193,6 +193,83 @@ input, textarea, select {
 .btn-primary-sm:hover:not(:disabled) { background: var(--accent-2, #0284c7); }
 .btn-primary-sm:disabled { opacity: 0.7; cursor: wait; }
 
+/* ═══ Dev-only Publish Update panel (Settings tab) ═══ */
+.dev-publish-panel {
+  background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+  color: #e0e7ff;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 8px 0;
+}
+.dev-panel-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; margin-bottom: 6px;
+}
+.dev-badge {
+  background: #fbbf24; color: #422006;
+  padding: 2px 7px; border-radius: 4px;
+  font-size: 9px; font-weight: 800; letter-spacing: 1px;
+}
+.dev-publish-panel .hint {
+  color: #c7d2fe;
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin-bottom: 10px;
+}
+.dev-version-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.dev-version-row code {
+  background: rgba(255,255,255,0.12); color: #fef9c3;
+  padding: 2px 8px; border-radius: 4px;
+  font-size: 11.5px;
+}
+.dev-readiness {
+  font-size: 11.5px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+}
+.dev-readiness.ok      { background: rgba(34, 197, 94, 0.18); color: #bbf7d0; }
+.dev-readiness.blocked { background: rgba(239, 68, 68, 0.18); color: #fecaca; }
+.dev-publish-actions {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.dev-publish-actions .btn-ghost-sm {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #e0e7ff;
+  font-size: 11px;
+}
+.dev-publish-actions .btn-ghost-sm:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+.dev-publish-log {
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 11px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.dev-publish-log .log-step { color: #93c5fd; font-weight: 700; }
+.dev-publish-log .log-out  { color: #cbd5e1; }
+.dev-publish-log .log-err  { color: #fca5a5; }
+.dev-publish-log .log-ok   { color: #86efac; font-weight: 600; }
+.dev-publish-log .log-fail { color: #f87171; font-weight: 600; }
+
 /* ═══════════════ TABS (Recents / Contacts / Keypad / Group) ═══════════════ */
 .tab-panels {
   flex: 1;
