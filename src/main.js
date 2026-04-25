@@ -10,7 +10,7 @@
 //      app — a phone should always be reachable even when minimized.
 //   5. Request microphone permission for the embedded WebRTC voice SDK.
 
-const { app, BrowserWindow, ipcMain, safeStorage, Tray, Menu, nativeImage, shell, dialog, session, net, powerMonitor } = require("electron");
+const { app, BrowserWindow, ipcMain, safeStorage, Tray, Menu, nativeImage, shell, dialog, session, net, powerMonitor, clipboard } = require("electron");
 // Auto-updater pulls new versions from GitHub Releases. Loaded lazily
 // so a missing dep (when running from source during dev) doesn't crash
 // the app on startup — we only need it in packaged builds.
@@ -541,6 +541,20 @@ ipcMain.handle("app:get-update-state", () => ({
   version: app.getVersion(),
   last: _updaterLastEvent,
 }));
+
+// Clipboard write via main. The sandboxed renderer's
+// navigator.clipboard.writeText() throws "permission denied" unless a
+// Clipboard API permission request is granted — main-process
+// clipboard.writeText() works unconditionally and is the recommended
+// path in Electron for user-initiated copies.
+ipcMain.handle("app:clipboard-write", (_evt, text) => {
+  try {
+    clipboard.writeText(String(text || ""));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 
 // ── Dev-only: Publish Update flow ──────────────────────────────────
 //

@@ -105,6 +105,18 @@
   // UI show a "Reconnecting…" status.
   let _reconnecting = false;
 
+  // True when launched with JOBCOUNT_ENV=dev (npm run dev). Drives
+  // both the DEV ribbon and the behavior of the auto-update UI —
+  // dev mode never shows the "Update ready" pill because we're the
+  // ones publishing updates, not consuming them.
+  //
+  // Sourced synchronously from preload's jobcountEnv bridge so every
+  // render call sees the correct flag — no IPC round-trip race.
+  let _isDevMode = (() => {
+    try { return (window.jobcountEnv?.jobcountEnv || "") === "dev"; }
+    catch { return false; }
+  })();
+
   // Auto-answer hint from server — see presenceSocket 'phone:auto-answer'.
   // { groupName, reason, expiresAt } or null. Consumed once by the next
   // incoming call, then cleared.
@@ -245,6 +257,29 @@
   }
 
   // ─── Boot ──────────────────────────────────────────────────────
+  // ═══════════════ Console helpers ═══════════════
+  // A single consistent look for boot banner + health ping so the
+  // console is skimmable instead of a wall of Twilio SDK noise.
+  function printBootBanner({ version, env, shop, deviceId, server }) {
+    const bar = "═".repeat(56);
+    console.log(
+`\n${bar}
+   📞 JobCount Phone   v${version || "?"}   [${(env || "prod").toUpperCase()}]
+${bar}
+   Shop:     ${shop     || "(not paired)"}
+   Device:   ${deviceId  || "(not paired)"}
+   Server:   ${server    || "(none)"}
+${bar}\n`
+    );
+  }
+  function logHealth(label, details) {
+    const parts = Object.entries(details || {})
+      .filter(([, v]) => v !== undefined && v !== null)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("  ");
+    console.log(`[${label}] ${parts}`);
+  }
+
   async function boot() {
     setStatus("gray", "Loading");
     loadingSub.textContent = "Reading device config…";
@@ -252,12 +287,48 @@
     // Surface the dev ribbon if the launcher set JOBCOUNT_ENV=dev.
     try {
       const sys = await window.jobcountPhone.systemInfo();
-      if (sys && sys.jobcountEnv === "dev") {
+      _isDevMode = !!(sys && sys.jobcountEnv === "dev");
+      if (_isDevMode) {
         document.getElementById("devRibbon").hidden = false;
       }
+      // Re-render the update state now that we know whether we're in
+      // dev mode — the initial render happened before _isDevMode was
+      // set and may have shown the wrong label/pill for dev builds.
+      try {
+        const info = await window.jobcountPhone.getUpdateState?.();
+        renderUpdateState(info?.last || { state: "idle" });
+      } catch {}
     } catch {}
 
     config = await window.jobcountPhone.getConfig();
+
+    // Once-per-session boot banner — gives us a clean anchor in the
+    // log showing exactly what this instance is.
+    try {
+      const info = await window.jobcountPhone.getUpdateState?.();
+      printBootBanner({
+        version: info?.version,
+        env: _isDevMode ? "dev" : "prod",
+        shop: config.shopName ? `${config.shopName} (${config.shopId})` : "",
+        deviceId: config.deviceId ? `${config.label || "unnamed"} — ${config.deviceId}` : "",
+        server: config.serverUrl || "",
+      });
+    } catch {}
+
+    // Periodic health ping — every 5 minutes. Short, scannable, and
+    // useful when the app has been running for hours and you want
+    // to confirm everything's still wired up.
+    setInterval(() => {
+      logHealth("health", {
+        ts: new Date().toISOString().slice(11, 19),
+        twilio: device ? "online" : "offline",
+        socket: presenceSocket && presenceSocket.connected ? "connected" : "disconnected",
+        call: activeCall ? (activeDirection || "active") : "idle",
+        queue: _lastQueueCount >= 0 ? _lastQueueCount : "?",
+        held: _lastHeldCount >= 0 ? _lastHeldCount : "?",
+        group: currentGroupName ? "in-group" : "—",
+      });
+    }, 5 * 60 * 1000);
 
     if (!config.hasToken) {
       showScreen("pairing");
@@ -528,7 +599,14 @@
 
     device = new Twilio.Device(token, {
       codecPreferences: ["opus", "pcmu"],
-      logLevel: 1,
+      // Twilio SDK log level:
+      //   1 = DEBUG (floods console with heartbeats every 10s)
+      //   2 = INFO
+      //   3 = WARN  ← production default: only surface real issues
+      //   4 = ERROR
+      // Raise this back to 1 during deep SDK debugging; otherwise 3
+      // gives us clean logs with real warnings still visible.
+      logLevel: _isDevMode ? 2 : 3,
     });
 
     device.on("registered", () => {
@@ -682,11 +760,21 @@
         reconnectionDelayMax: 15000,
       });
 
-      presenceSocket.on("connect",    () => console.log("[presence] connected", presenceSocket.id));
-      presenceSocket.on("disconnect", (r) => console.log("[presence] disconnected:", r));
-      presenceSocket.on("connect_error", (e) => console.warn("[presence] connect error:", e.message));
-      presenceSocket.on("phone:ready",   (p) => console.log("[presence] ready:", p));
-      presenceSocket.on("phone:error",   (e) => console.warn("[presence] server error:", e));
+      // Track connect/disconnect silently except on transitions —
+      // reconnect storms would flood the log. First connect is
+      // noteworthy, subsequent ones are implicit from disconnect log.
+      let _socketEverConnected = false;
+      presenceSocket.on("connect", () => {
+        if (!_socketEverConnected) {
+          console.log(`[socket] connected (${presenceSocket.id})`);
+          _socketEverConnected = true;
+        } else {
+          console.log("[socket] reconnected");
+        }
+      });
+      presenceSocket.on("disconnect", (r) => console.log(`[socket] disconnected (${r})`));
+      presenceSocket.on("connect_error", (e) => console.warn("[socket] connect error:", e.message));
+      presenceSocket.on("phone:error",   (e) => console.warn("[socket] server error:", e));
 
       // Server-to-device hint: the very next incoming call should be
       // accepted automatically without ringing the user. Used when the
@@ -1061,13 +1149,22 @@
   };
 
   // ─── Live Queue ────────────────────────────────────────────────
+  // Keep the last known count so we only log when something changes —
+  // otherwise the 5-second poll floods the console with "0 members".
+  let _lastQueueCount = -1;
   async function refreshQueue() {
     try {
       const data = await apiFetch("/phone-device/queue");
       queueState = Array.isArray(data?.queue) ? data.queue : [];
+      if (queueState.length !== _lastQueueCount) {
+        if (queueState.length > 0 || _lastQueueCount > 0) {
+          console.log(`[queue] ${queueState.length} caller(s) waiting`);
+        }
+        _lastQueueCount = queueState.length;
+      }
       renderQueue();
     } catch (e) {
-      if (e.status !== 401) console.warn("refreshQueue:", e.message);
+      if (e.status !== 401) console.warn("[queue] refresh failed:", e.message);
     }
   }
 
@@ -1116,19 +1213,21 @@
   }
 
   // ─── Held Calls ────────────────────────────────────────────────
+  // Only log when the count changes (same rationale as Live Queue).
+  let _lastHeldCount = -1;
   async function refreshHeld() {
     try {
       const data = await apiFetch("/phone-device/held-calls");
       heldState = Array.isArray(data?.held) ? data.held : [];
-      // Surface the server's _debug block in the console so we can see
-      // queue lookup results (expected name, matchedBy, currentSize) when
-      // diagnosing held-call visibility issues.
-      if (data && data._debug) {
-        console.log("[refreshHeld]", heldState.length, "member(s) —", JSON.stringify(data._debug));
+      if (heldState.length !== _lastHeldCount) {
+        if (heldState.length > 0 || _lastHeldCount > 0) {
+          console.log(`[held] ${heldState.length} call(s) on hold`);
+        }
+        _lastHeldCount = heldState.length;
       }
       renderHeld();
     } catch (e) {
-      if (e.status !== 401) console.warn("refreshHeld:", e.message);
+      if (e.status !== 401) console.warn("[held] refresh failed:", e.message);
     }
   }
 
@@ -1750,7 +1849,8 @@
   // Bootstrapping for the panels: kick a first refresh as soon as the
   // phone screen is live, then start periodic polling as a safety net.
   function startLiveMonitors() {
-    console.log("[startLiveMonitors] kicking queue + held refresh + polling");
+    // No log here — the refresh functions already surface state
+    // changes via [queue] / [held] prefix logs.
     refreshQueue();
     refreshHeld();
     if (queuePollTimer) clearInterval(queuePollTimer);
@@ -1813,11 +1913,19 @@
 
   function renderUpdateState(payload) {
     if (!payload) return;
-    const st = payload.state;
+    // In dev, short-circuit any "available" / "downloading" / "ready"
+    // states so a stale event lingering from a pre-fix session can't
+    // resurrect the pill. Dev always renders as idle regardless of what
+    // electron-updater thinks.
+    const st = _isDevMode ? "idle" : payload.state;
 
-    // Top-bar pill — only visible for "downloading" and "ready".
+    // Top-bar pill — only visible in PRODUCTION for "downloading" or
+    // "ready" states. In dev we're the one publishing updates, so a
+    // "Update ready" pill would be nonsense and visually noisy.
     if (updatePill) {
-      if (st === "downloading") {
+      if (_isDevMode) {
+        updatePill.hidden = true;
+      } else if (st === "downloading") {
         updatePill.hidden = false;
         updatePill.classList.remove("ready");
         updatePill.classList.add("downloading");
@@ -1830,13 +1938,21 @@
         updatePillText.textContent = `Update ${payload.version || ""} ready`;
         updatePill.title = "Click to install and restart.";
       } else {
+        // "idle", "checking", "up-to-date", "available", "error",
+        // anything else — no pill. We only interrupt the agent's
+        // top bar when there's something actionable for them.
         updatePill.hidden = true;
       }
     }
 
-    // Settings panel — always reflects latest state.
+    // Settings panel — always reflects latest state, with dev-aware
+    // phrasing so the agent isn't told to "press Check now" when
+    // they're actually running from source.
     if (updateStatusEl) {
       const label = (() => {
+        if (_isDevMode && (st === "idle" || st === "up-to-date")) {
+          return "Dev build — use the Publish Update panel below to ship a new version.";
+        }
         switch (st) {
           case "idle":        return "Updates are manual. Press Check now to see if a new version is available.";
           case "checking":    return "Checking for updates…";
@@ -1845,14 +1961,21 @@
           case "downloading": return `Downloading v${payload.version || ""}… ${payload.percent || 0}%`;
           case "ready":       return `Update v${payload.version} ready. Click Install & Restart.`;
           case "error":       return `Update check failed: ${payload.error || "unknown"}`;
-          default:            return "Updates are manual. Press Check now to see if a new version is available.";
+          default:
+            return _isDevMode
+              ? "Dev build — use the Publish Update panel below to ship a new version."
+              : "Updates are manual. Press Check now to see if a new version is available.";
         }
       })();
       updateStatusEl.textContent = label;
       updateStatusEl.classList.toggle("error",  st === "error");
-      updateStatusEl.classList.toggle("ready",  st === "ready");
+      updateStatusEl.classList.toggle("ready",  st === "ready" && !_isDevMode);
     }
-    if (btnInstallUpdate) btnInstallUpdate.hidden = st !== "ready";
+    // Install button: shown only in prod when there's actually a
+    // downloaded update. In dev it's never relevant.
+    if (btnInstallUpdate) btnInstallUpdate.hidden = (_isDevMode || st !== "ready");
+    // Check button: hidden in dev too — publishing is the dev workflow.
+    if (btnCheckUpdates) btnCheckUpdates.style.display = _isDevMode ? "none" : "";
   }
 
   if (btnCheckUpdates) {
@@ -1881,20 +2004,33 @@
     });
   }
 
-  // Subscribe to main-process updater events.
-  try {
-    window.jobcountPhone.onUpdateState?.((payload) => renderUpdateState(payload));
-  } catch {}
-
-  // Initial fetch: current version + last-known update state.
+  // Initialize the update subsystem in a deterministic order:
+  //   1. Fetch systemInfo so _isDevMode is set BEFORE any render call
+  //   2. Do the initial render with the correct dev-mode flag
+  //   3. THEN subscribe to future update-state events
+  //
+  // Prior versions raced between the initial IIFE and boot()'s
+  // dev-mode detection, causing the "Update ready" pill to briefly
+  // appear in dev builds when an update had been downloaded earlier
+  // in the same process.
   (async () => {
+    try {
+      const sys = await window.jobcountPhone.systemInfo();
+      _isDevMode = !!(sys && sys.jobcountEnv === "dev");
+    } catch {}
+
     try {
       const info = await window.jobcountPhone.getUpdateState?.();
       if (info?.version && settingsAppVersion) {
         settingsAppVersion.textContent = `v${info.version}`;
       }
-      if (info?.last) renderUpdateState(info.last);
-      else renderUpdateState({ state: "idle" });
+      renderUpdateState(info?.last || { state: "idle" });
+    } catch {}
+
+    // Subscribe only after initial state is settled — any update-state
+    // event from here on re-renders with the correct _isDevMode.
+    try {
+      window.jobcountPhone.onUpdateState?.((payload) => renderUpdateState(payload));
     } catch {}
   })();
 
@@ -1950,14 +2086,31 @@
     btnCopyPublishLog.addEventListener("click", async () => {
       const text = devPublishLog ? devPublishLog.innerText : "";
       if (!text) { toast("Log is empty", "info", 1200); return; }
+      // Main-process clipboard avoids the "Write permission denied"
+      // error that navigator.clipboard throws inside a sandboxed
+      // renderer. Fall back to navigator.clipboard if the IPC is
+      // somehow unavailable (e.g. older preload bundle).
+      let ok = false;
+      let errMsg = "";
       try {
-        await navigator.clipboard.writeText(text);
+        if (window.jobcountPhone.clipboardWrite) {
+          const r = await window.jobcountPhone.clipboardWrite(text);
+          ok = !!r?.ok;
+          if (!ok) errMsg = r?.error || "unknown";
+        } else {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (e) {
+        errMsg = e.message;
+      }
+      if (ok) {
         const orig = btnCopyPublishLog.innerHTML;
         btnCopyPublishLog.innerHTML =
           '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
         setTimeout(() => { btnCopyPublishLog.innerHTML = orig; }, 1500);
-      } catch (e) {
-        toast(`Copy failed: ${e.message}`, "error");
+      } else {
+        toast(`Copy failed: ${errMsg}`, "error");
       }
     });
   }

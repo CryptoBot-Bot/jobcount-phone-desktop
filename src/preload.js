@@ -5,6 +5,15 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Expose env vars synchronously so the renderer can make dev-mode
+// decisions at first paint without awaiting any IPC round-trip.
+// Preload runs before the page's scripts so this is always set.
+const ENV_SYNC = {
+  jobcountEnv: String(process.env.JOBCOUNT_ENV || "prod").toLowerCase(),
+  nodeEnv:     String(process.env.NODE_ENV || "production").toLowerCase(),
+};
+contextBridge.exposeInMainWorld("jobcountEnv", ENV_SYNC);
+
 contextBridge.exposeInMainWorld("jobcountPhone", {
   // Config
   getConfig: () => ipcRenderer.invoke("config:get"),
@@ -51,6 +60,9 @@ contextBridge.exposeInMainWorld("jobcountPhone", {
   checkForUpdates:   () => ipcRenderer.invoke("app:check-for-updates"),
   installUpdateNow:  () => ipcRenderer.invoke("app:install-update-now"),
   getUpdateState:    () => ipcRenderer.invoke("app:get-update-state"),
+
+  // Clipboard via main — bypasses sandboxed renderer permission errors.
+  clipboardWrite:    (text) => ipcRenderer.invoke("app:clipboard-write", text),
 
   // Dev-only: bump version + commit + tag + push to trigger a release.
   // Returns { ok, jobId, version, tagName } when complete; renderer

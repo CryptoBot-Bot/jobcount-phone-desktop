@@ -8,6 +8,13 @@
    - Status pill with animated dot for live state.
    ═══════════════════════════════════════════════════════════════ */
 
+/* Global guarantee that the HTML5 `hidden` attribute actually hides.
+ * Any class with an explicit `display:` value normally outranks the
+ * browser's built-in `[hidden] { display: none }` rule, which caused
+ * the update pill to remain visible even with `hidden=""`. This
+ * !important override is the simplest fix and applies everywhere. */
+[hidden] { display: none !important; }
+
 *, *::before, *::after { box-sizing: border-box; }
 
 :root {
@@ -129,7 +136,12 @@ input, textarea, select {
 .btn-reconnect:hover:not(:disabled)  { background: #dc2626; }
 .btn-reconnect:disabled { opacity: 0.7; cursor: wait; animation: none; }
 
-/* Update-available pill in the top bar */
+/* Update-available pill in the top bar.
+ *
+ * IMPORTANT: setting a display value on a class selector overrides
+ * the HTML5 `hidden` attribute's default `display: none`, which is
+ * why `<div hidden>` didn't actually hide. We reinstate the browser
+ * default with an explicit `[hidden]` rule so `hidden` works again. */
 .update-pill {
   display: inline-flex; align-items: center; gap: 5px;
   background: rgba(34, 197, 94, 0.22);
@@ -140,6 +152,7 @@ input, textarea, select {
   margin-left: 6px;
   border: 1px solid rgba(34, 197, 94, 0.35);
 }
+.update-pill[hidden] { display: none !important; }
 .update-pill.downloading {
   background: rgba(14, 165, 233, 0.22);
   color: #7dd3fc;
