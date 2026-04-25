@@ -1838,13 +1838,14 @@
     if (updateStatusEl) {
       const label = (() => {
         switch (st) {
+          case "idle":        return "Updates are manual. Press Check now to see if a new version is available.";
           case "checking":    return "Checking for updates…";
           case "up-to-date":  return "You're on the latest version.";
           case "available":   return `Update available: v${payload.version}. Downloading…`;
           case "downloading": return `Downloading v${payload.version || ""}… ${payload.percent || 0}%`;
           case "ready":       return `Update v${payload.version} ready. Click Install & Restart.`;
           case "error":       return `Update check failed: ${payload.error || "unknown"}`;
-          default:            return "Idle.";
+          default:            return "Updates are manual. Press Check now to see if a new version is available.";
         }
       })();
       updateStatusEl.textContent = label;
@@ -1893,7 +1894,7 @@
         settingsAppVersion.textContent = `v${info.version}`;
       }
       if (info?.last) renderUpdateState(info.last);
-      else renderUpdateState({ state: "up-to-date" });
+      else renderUpdateState({ state: "idle" });
     } catch {}
   })();
 
@@ -1906,6 +1907,9 @@
   const devCurrentVersion = document.getElementById("devCurrentVersion");
   const devReadiness     = document.getElementById("devReadiness");
   const devPublishLog    = document.getElementById("devPublishLog");
+  const devLogWrap       = document.getElementById("devLogWrap");
+  const btnCopyPublishLog = document.getElementById("btnCopyPublishLog");
+  const btnClearPublishLog = document.getElementById("btnClearPublishLog");
   const devPublishButtons = devPublishPanel
     ? devPublishPanel.querySelectorAll("button[data-bump]")
     : [];
@@ -1934,12 +1938,35 @@
 
   function appendPublishLog(line, kind) {
     if (!devPublishLog) return;
-    devPublishLog.hidden = false;
+    if (devLogWrap) devLogWrap.hidden = false;
     const span = document.createElement("span");
     span.className = `log-${kind || "out"}`;
     span.textContent = line + "\n";
     devPublishLog.appendChild(span);
     devPublishLog.scrollTop = devPublishLog.scrollHeight;
+  }
+
+  if (btnCopyPublishLog) {
+    btnCopyPublishLog.addEventListener("click", async () => {
+      const text = devPublishLog ? devPublishLog.innerText : "";
+      if (!text) { toast("Log is empty", "info", 1200); return; }
+      try {
+        await navigator.clipboard.writeText(text);
+        const orig = btnCopyPublishLog.innerHTML;
+        btnCopyPublishLog.innerHTML =
+          '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
+        setTimeout(() => { btnCopyPublishLog.innerHTML = orig; }, 1500);
+      } catch (e) {
+        toast(`Copy failed: ${e.message}`, "error");
+      }
+    });
+  }
+
+  if (btnClearPublishLog) {
+    btnClearPublishLog.addEventListener("click", () => {
+      if (devPublishLog) devPublishLog.innerHTML = "";
+      if (devLogWrap) devLogWrap.hidden = true;
+    });
   }
 
   if (devPublishPanel) {

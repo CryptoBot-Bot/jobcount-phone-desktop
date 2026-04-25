@@ -251,13 +251,35 @@ input, textarea, select {
 .dev-publish-actions .btn-ghost-sm:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.16);
 }
+.dev-log-wrap {
+  background: #0f172a;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.dev-log-toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px;
+  background: #1e293b;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.dev-log-label {
+  flex: 1;
+  font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #94a3b8;
+  padding-left: 4px;
+}
+.dev-log-toolbar .btn-ghost-sm {
+  padding: 3px 8px;
+  font-size: 10.5px;
+}
 .dev-publish-log {
   background: #0f172a;
   color: #e2e8f0;
   font-family: ui-monospace, "Cascadia Code", monospace;
   font-size: 11px;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 0;
   max-height: 240px;
   overflow-y: auto;
   margin: 0;

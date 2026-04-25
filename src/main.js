@@ -471,9 +471,24 @@ function broadcastUpdateState(payload) {
 
 function initAutoUpdater() {
   if (!autoUpdater) return;
-  // No verbose prompts; we drive the UX from the renderer.
+
+  // Update behavior is MANUAL-ONLY. We never check for updates on our
+  // own — the user has to click "Check for updates" in Settings.
+  // Rationale: surprise updates during business hours (mid-call) are
+  // unacceptable for a phone system. Dispatchers want to decide when
+  // to take the app down for a restart.
+  //
+  //   autoDownload = true            → once the user clicks Check and
+  //                                    a newer version is found, start
+  //                                    downloading it right away so the
+  //                                    "Install & Restart" button is
+  //                                    ready by the time they look back.
+  //   autoInstallOnAppQuit = false   → closing the app never silently
+  //                                    installs. The user must
+  //                                    explicitly click Install &
+  //                                    Restart to apply the update.
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = false;
 
   autoUpdater.on("checking-for-update", () =>
     broadcastUpdateState({ state: "checking" }));
@@ -492,15 +507,9 @@ function initAutoUpdater() {
   autoUpdater.on("error", (err) =>
     broadcastUpdateState({ state: "error", error: String(err?.message || err) }));
 
-  // Kick once on startup (slight delay so the main window is ready to
-  // receive events), then every 4 hours.
-  setTimeout(() => {
-    autoUpdater.checkForUpdates().catch((e) =>
-      console.warn("[updater] initial check failed:", e.message));
-  }, 5000);
-  setInterval(() => {
-    autoUpdater.checkForUpdates().catch(() => {});
-  }, 4 * 60 * 60 * 1000);
+  // No startup check, no interval. Updates happen only when the user
+  // presses Check for updates in Settings (which routes through the
+  // app:check-for-updates IPC handler below).
 }
 
 ipcMain.handle("app:check-for-updates", async () => {
@@ -562,14 +571,45 @@ function _streamLine(jobId, kind, line) {
 
 // Run a single child-process step, piping stdout/stderr to the
 // renderer in real time. Resolves with exit code.
+//
+// Shell handling on Windows is a minefield:
+//   - `git.exe` is a normal binary on PATH — spawn can find it, NO
+//     shell needed. With `shell:true`, cmd.exe re-parses the arg
+//     array and strips quotes, breaking args with spaces like a
+//     commit message `Release v1.0.2`.
+//   - `npm.cmd` IS a cmd batch file — spawn without shell fails on
+//     Windows with ENOENT. We set shell:true for npm specifically
+//     and pass the args as a single pre-quoted string to dodge the
+//     re-parsing bug.
 function _runStep(jobId, label, command, args, opts = {}) {
   return new Promise((resolve) => {
     _streamLine(jobId, "step", `\n$ ${label}`);
     const { spawn } = require("child_process");
-    const proc = spawn(command, args, {
+
+    const isWin = process.platform === "win32";
+    const needsShell = opts.shell === true ||
+      (isWin && /^(npm|npx|yarn)$/i.test(command));
+
+    let spawnCmd = command;
+    let spawnArgs = args;
+    let spawnShell = needsShell;
+
+    if (needsShell && isWin) {
+      // Hand-quote each arg to survive cmd.exe re-parsing.
+      const quoteIfNeeded = (a) => {
+        const s = String(a);
+        return /[\s"&|<>^()%]/.test(s)
+          ? `"${s.replace(/"/g, '\\"')}"`
+          : s;
+      };
+      spawnCmd = [command, ...args.map(quoteIfNeeded)].join(" ");
+      spawnArgs = [];
+    }
+
+    const proc = spawn(spawnCmd, spawnArgs, {
       cwd: path.resolve(__dirname, ".."),
       env: process.env,
-      shell: process.platform === "win32",
+      shell: spawnShell,
       ...opts,
     });
     proc.stdout.on("data", (b) =>

@@ -376,7 +376,17 @@
             <button class="btn-ghost-sm" data-bump="minor" disabled>Minor (1.0.0 → 1.1.0)</button>
             <button class="btn-ghost-sm" data-bump="major" disabled>Major (1.0.0 → 2.0.0)</button>
           </div>
-          <pre id="devPublishLog" class="dev-publish-log" hidden></pre>
+          <div class="dev-log-wrap" hidden id="devLogWrap">
+            <div class="dev-log-toolbar">
+              <span class="dev-log-label">Log</span>
+              <button class="btn-ghost-sm dev-log-copy" id="btnCopyPublishLog" title="Copy the log to your clipboard">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy Raw
+              </button>
+              <button class="btn-ghost-sm" id="btnClearPublishLog" title="Clear the log">Clear</button>
+            </div>
+            <pre id="devPublishLog" class="dev-publish-log"></pre>
+          </div>
         </div>
 
         <div class="settings-group">
