@@ -49,18 +49,15 @@
         "nsis",
         "portable"
       ],
-      "icon": "assets/icon.ico",
       "artifactName": "JobCount-Phone-Setup-${version}.${ext}"
     },
     "mac": {
       "target": "dmg",
-      "icon": "assets/icon.icns",
       "category": "public.app-category.business",
       "artifactName": "JobCount-Phone-${version}.${ext}"
     },
     "linux": {
       "target": "AppImage",
-      "icon": "assets/icon.png",
       "category": "Office",
       "artifactName": "JobCount-Phone-${version}.${ext}"
     },
