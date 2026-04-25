@@ -754,10 +754,17 @@ ${bar}\n`
         auth: { deviceToken: token },
         withCredentials: false,
         path: "/socket.io",
-        transports: ["websocket", "polling"],
+        // Force websocket-only — Heroku's router load-balances polling
+        // requests across dynos, which causes flapping if sticky
+        // sessions weren't enabled, AND polling burns more bandwidth.
+        // Websocket is one long-lived connection bound to a single
+        // dyno, immune to the LB and dyno-affinity issues.
+        transports: ["websocket"],
+        upgrade: false,
         reconnection: true,
         reconnectionDelay: 1500,
         reconnectionDelayMax: 15000,
+        timeout: 20000,
       });
 
       // Track connect/disconnect silently except on transitions —
@@ -772,7 +779,19 @@ ${bar}\n`
           console.log("[socket] reconnected");
         }
       });
-      presenceSocket.on("disconnect", (r) => console.log(`[socket] disconnected (${r})`));
+      presenceSocket.on("disconnect", (reason) => {
+        // Reasons we see in practice:
+        //   "io server disconnect"   → server kicked us (token revoked, etc.)
+        //   "io client disconnect"   → we called .disconnect() ourselves
+        //   "ping timeout"           → no heartbeat from server
+        //   "transport close"        → connection closed (Heroku idle, etc.)
+        //   "transport error"        → network blip
+        // Anything but "io client disconnect" is unexpected — flag it.
+        const unexpected = reason !== "io client disconnect";
+        console.log(
+          `[socket] disconnected (${reason})${unexpected ? " — will reconnect" : ""}`
+        );
+      });
       presenceSocket.on("connect_error", (e) => console.warn("[socket] connect error:", e.message));
       presenceSocket.on("phone:error",   (e) => console.warn("[socket] server error:", e));
 
