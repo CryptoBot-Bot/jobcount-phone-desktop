@@ -46,8 +46,7 @@
     ],
     "win": {
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ],
       "artifactName": "JobCount-Phone-Setup-${version}.${ext}"
     },
