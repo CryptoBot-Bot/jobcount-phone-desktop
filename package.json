@@ -1,6 +1,6 @@
 {
   "name": "jobcount-phone-desktop",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Desktop softphone that turns any PC into a JobCount phone endpoint.",
   "main": "src/main.js",
   "author": "JobCount",
