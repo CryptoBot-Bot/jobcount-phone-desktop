@@ -3,7 +3,10 @@
 <head>
   <meta charset="utf-8">
   <title>JobCount Phone — Group</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
+  <!-- Same CSP shape as the main renderer — allow ws/wss for the group:snapshot
+       socket subscription, http/https for REST fetches. Internal app, paired
+       server URL is the only origin we ever talk to. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' http: https: ws: wss: blob: data:; connect-src 'self' http: https: ws: wss:;">
   <link rel="stylesheet" href="group.css">
 </head>
 <body>
@@ -60,12 +63,22 @@
       <!-- Tabs -->
       <div class="modal-tabs">
         <button type="button" class="modal-tab active" data-tab="device">Paired device</button>
+        <button type="button" class="modal-tab" data-tab="contact">Contact</button>
         <button type="button" class="modal-tab" data-tab="number">Phone number</button>
       </div>
 
       <!-- Device tab -->
       <div class="modal-body" id="inviteDeviceBody" data-pane="device">
         <div class="empty">Loading devices…</div>
+      </div>
+
+      <!-- Contact tab — search Contacts by name or number, tap to invite. -->
+      <div class="modal-body" id="inviteContactBody" data-pane="contact" hidden>
+        <input type="search" id="inviteContactSearch"
+               placeholder="Search by name or number…" autocomplete="off">
+        <div id="inviteContactList" class="gis-contact-list">
+          <div class="empty">Type a name or number to filter your contacts.</div>
+        </div>
       </div>
 
       <!-- Phone-number tab -->
@@ -106,6 +119,8 @@
   <!-- Toast stack -->
   <div id="toastStack" class="toast-stack"></div>
 
+  <!-- socket.io-client for live group:snapshot updates -->
+  <script src="../../node_modules/socket.io-client/dist/socket.io.min.js"></script>
   <script src="group.js"></script>
 </body>
 </html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>JobCount Phone — Transcript</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' http: https: ws: wss: blob: data:; connect-src 'self' http: https: ws: wss:;">
+  <link rel="stylesheet" href="transcript.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-title">
+      <span class="dot dot-pulse" id="statusDot"></span>
+      <strong>Live Transcript</strong>
+      <span class="peer-label" id="peerLabel"></span>
+    </div>
+    <div class="topbar-actions">
+      <label class="lang-select">
+        <span>Translate to</span>
+        <select id="targetLang">
+          <option value="en">English</option>
+          <option value="ru">Russian</option>
+        </select>
+      </label>
+      <button class="btn-close" id="btnClose" title="Close">&times;</button>
+    </div>
+  </header>
+
+  <main class="lanes" id="lanes">
+    <section class="lane lane-local" data-side="local">
+      <div class="lane-head">
+        <span class="lane-dot dot-local"></span>
+        <strong>You</strong>
+      </div>
+      <div class="lane-body" id="laneLocal">
+        <div class="lane-empty">Waiting for speech…</div>
+      </div>
+    </section>
+
+    <section class="lane lane-remote" data-side="remote">
+      <div class="lane-head">
+        <span class="lane-dot dot-remote"></span>
+        <strong>Caller</strong>
+      </div>
+      <div class="lane-body" id="laneRemote">
+        <div class="lane-empty">Waiting for speech…</div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="status-line" id="statusLine">Connecting…</div>
+  </footer>
+
+  <script src="../../node_modules/socket.io-client/dist/socket.io.min.js"></script>
+  <script src="transcript.js"></script>
+</body>
+</html>

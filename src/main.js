@@ -87,6 +87,7 @@ function clearConfig() {
 // --- Window + tray state ---
 let mainWindow = null;
 let groupWindow = null;   // Only one group conference window at a time.
+let transcriptWindow = null;   // Only one live-transcript window at a time.
 let tray = null;
 let isQuitting = false;
 
@@ -251,9 +252,79 @@ ipcMain.handle("config:set-label", (_evt, label) => {
   return saveConfig(cfg);
 });
 
+// User audio prefs (ringtone choice, ringer output device, mic gain, etc).
+// Stored under cfg.prefs so we never collide with the pairing payload.
+// Renderer merges by calling save-prefs with only the keys it wants to
+// change; existing keys survive.
+ipcMain.handle("config:get-prefs", () => {
+  const cfg = loadConfig();
+  return cfg.prefs || {};
+});
+ipcMain.handle("config:save-prefs", (_evt, partial) => {
+  const cfg = loadConfig();
+  cfg.prefs = { ...(cfg.prefs || {}), ...(partial || {}) };
+  return saveConfig(cfg);
+});
+
 ipcMain.handle("config:clear", () => {
   clearConfig();
   return true;
+});
+
+// Fetch raw bytes from a URL via Node's https/http stack and hand them
+// back to the renderer. Used by the ringtone player to load mp3 files
+// from the paired server WITHOUT going through the renderer's
+// file://-origin CORS layer (which intermittently rejects audio fetches
+// from ngrok endpoints in some Chromium builds). Returns a Uint8Array
+// — Electron's IPC transports Buffers natively, no base64 dance.
+function httpFetchBytes(url, { timeoutMs = 30000, headers = {} } = {}) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(url); }
+    catch (e) { return resolve({ ok: false, status: 0, error: `Invalid URL: ${e.message}` }); }
+    const lib = u.protocol === "https:" ? https : http;
+    const opts = {
+      method: "GET",
+      hostname: u.hostname,
+      port: u.port || (u.protocol === "https:" ? 443 : 80),
+      path: u.pathname + u.search,
+      headers: {
+        "User-Agent": `JobCountPhone/${app.getVersion()} (${process.platform})`,
+        "ngrok-skip-browser-warning": "1",
+        ...headers,
+      },
+    };
+    const req = lib.request(opts, (res) => {
+      // Follow one level of redirects (express.static can issue 301 if
+      // a path is requested without trailing slash, etc.).
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        res.resume();
+        const next = new URL(res.headers.location, url).toString();
+        return resolve(httpFetchBytes(next, { timeoutMs, headers }));
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return resolve({ ok: false, status: res.statusCode, error: `HTTP ${res.statusCode}` });
+      }
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({
+        ok: true,
+        status: 200,
+        bytes: Buffer.concat(chunks),
+        contentType: res.headers["content-type"] || "",
+      }));
+    });
+    req.on("error", (err) => {
+      resolve({ ok: false, status: 0, error: [err.code, err.message].filter(Boolean).join(": ") });
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Request timeout (${Math.round(timeoutMs/1000)}s)`)));
+    req.end();
+  });
+}
+
+ipcMain.handle("api:fetch-bytes", async (_evt, { url } = {}) => {
+  return httpFetchBytes(String(url || ""));
 });
 
 // JSON-over-HTTP helper built on Node's native `https`/`http` modules.
@@ -421,6 +492,70 @@ ipcMain.handle("window:group-open", (_evt, payload) => {
 ipcMain.handle("window:group-close", () => {
   if (groupWindow && !groupWindow.isDestroyed()) {
     groupWindow.close();
+  }
+});
+
+// Live-transcription window — small floating dialog with two scrolling
+// lanes (You / Caller) showing the live transcript and translation. Same
+// shape as the group window (separate BrowserWindow, own /phone-live
+// socket subscription) so it works while the main softphone window is
+// minimized to the tray.
+ipcMain.handle("window:transcript-open", (_evt, payload = {}) => {
+  if (transcriptWindow && !transcriptWindow.isDestroyed()) {
+    transcriptWindow.show();
+    transcriptWindow.focus();
+    return { ok: true, reused: true };
+  }
+
+  transcriptWindow = new BrowserWindow({
+    width: 520,
+    height: 640,
+    minWidth: 380,
+    minHeight: 420,
+    backgroundColor: "#0f172a",
+    title: "JobCount Phone — Transcript",
+    autoHideMenuBar: true,
+    parent: mainWindow || undefined,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  // Initial target language ("en" | "ru") + optional callSid passed in
+  // via URL hash so the transcript window can label the call header.
+  const params = new URLSearchParams();
+  if (payload.target) params.set("target", payload.target);
+  if (payload.callSid) params.set("callSid", payload.callSid);
+  if (payload.peerLabel) params.set("peerLabel", payload.peerLabel);
+  const hash = params.toString() ? `#${params.toString()}` : "";
+  transcriptWindow.loadFile(path.join(__dirname, "transcript", "index.html"), { hash });
+
+  // When the user closes the transcript window manually, tell the main
+  // softphone window so it can tear down the audio streaming pipeline —
+  // otherwise we'd keep paying OpenAI to transcribe into nothing.
+  transcriptWindow.on("closed", () => {
+    transcriptWindow = null;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("transcript:host-event", { kind: "window-closed" });
+    }
+  });
+  return { ok: true };
+});
+
+ipcMain.handle("window:transcript-close", () => {
+  if (transcriptWindow && !transcriptWindow.isDestroyed()) {
+    transcriptWindow.close();
+  }
+});
+
+// Lets the main renderer notify the transcript window of call-level
+// state changes (call ended → window auto-closes).
+ipcMain.handle("window:transcript-notify", (_evt, payload = {}) => {
+  if (transcriptWindow && !transcriptWindow.isDestroyed()) {
+    transcriptWindow.webContents.send("transcript:host-event", payload);
   }
 });
 

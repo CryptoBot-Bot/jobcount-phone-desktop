@@ -159,6 +159,18 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span id="groupLabel">Group</span>
         </button>
+        <button id="btnTranscribe" class="pill-btn" disabled title="Live transcribe + translate this call">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="13" y2="13"/></svg>
+          <span id="transcribeLabel">Transcribe</span>
+        </button>
+      </div>
+
+      <!-- Inline mic-gain slider, visible during an active call so the user
+           can boost or trim their voice without diving into Settings. -->
+      <div class="mic-gain-inline" id="micGainInline" hidden>
+        <span class="mgi-label">Mic</span>
+        <input type="range" id="micGainSliderInline" min="0.5" max="2" step="0.05" value="1">
+        <code id="micGainValueInline">1.00×</code>
       </div>
 
       <!-- Transfer picker — small overlay anchored inside the phone screen.
@@ -280,6 +292,15 @@
             <div class="group-init-section">
               <div class="gis-title">Phone numbers</div>
               <div id="groupInitNumbers" class="gis-list"></div>
+
+              <!-- Quick-pick from contacts: type a name or number to filter,
+                   tap a row to add their number to the group invite list.
+                   Free-form input below is the fallback for non-contact dials. -->
+              <input type="search" id="groupInitContactSearch"
+                     class="tab-search" placeholder="Search contacts by name or number…"
+                     autocomplete="off">
+              <div id="groupInitContactList" class="gis-contact-list" hidden></div>
+
               <div class="gis-add-row">
                 <input type="tel" id="groupInitNumInput" placeholder="+1 555 123 4567">
                 <button class="btn-mini" id="btnGroupInitAddNum">Add</button>
@@ -333,6 +354,38 @@
           <label>Speaker</label>
           <select id="selectSpeaker"></select>
           <div class="hint">Choose your USB handset or headset from the dropdowns.</div>
+        </div>
+
+        <div class="settings-group">
+          <label>Mic sensitivity</label>
+          <div class="slider-row">
+            <input type="range" id="micGainSlider" min="0.5" max="2" step="0.05" value="1">
+            <code id="micGainValue">1.00×</code>
+          </div>
+          <div class="hint">Boost or reduce your outgoing mic volume. 1.00× = no change.</div>
+        </div>
+
+        <div class="settings-group">
+          <label>Ringer output</label>
+          <select id="selectRinger"></select>
+          <div class="hint">Where the ringtone plays. Set this to your desk speakers if your headset stays unplugged between calls.</div>
+        </div>
+
+        <div class="settings-group">
+          <label>Ringtone</label>
+          <div class="slider-row">
+            <select id="selectRingtone" style="flex:1;"></select>
+            <button class="btn-ghost-sm" id="btnPreviewRingtone" type="button">Preview</button>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <label>Ringer volume</label>
+          <div class="slider-row">
+            <input type="range" id="ringerVolumeSlider" min="0" max="1" step="0.05" value="1">
+            <code id="ringerVolumeValue">100%</code>
+          </div>
+          <div class="hint">Loudness of the ringtone — independent of call audio.</div>
         </div>
 
         <div class="settings-group settings-group-info">

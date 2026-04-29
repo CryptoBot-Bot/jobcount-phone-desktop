@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:mixkit.co)",
+      "Bash(curl -sL \"https://mixkit.co/free-sound-effects/ringtone/\" -A \"Mozilla/5.0\")",
+      "Bash(python -c 'import sys,re; html=sys.stdin.read\\(\\); blocks=re.findall\\(r\"sfx/\\(\\\\d+\\)/\\\\d+-preview\\\\.mp3.*?title=\\\\\"\\([^\\\\\"]+\\)\\\\\"|title=\\\\\"\\([^\\\\\"]+\\)\\\\\".*?sfx/\\(\\\\d+\\)/\\\\d+-preview\\\\.mp3\", html, re.DOTALL\\); print\\(blocks[:10]\\)')",
+      "Bash(curl -sL -A Mozilla/5.0 https://mixkit.co/free-sound-effects/__TRACKED_VAR__/)",
+      "Bash(curl -sL -A \"Mozilla/5.0\" \"https://mixkit.co/free-sound-effects/ringtone/\" -o /tmp/mixkit_ring.html)",
+      "Read(//tmp/**)",
+      "Bash(awk '/data-audio-player-item-id-value=\"1356\"/{found=1; for\\(i=0;i<60;i++\\){getline; if\\(match\\($0, /<a [^>]*href=\"\\\\/free-sound-effects\\\\/[0-9]+-[^\"]+\"/\\)\\) {print $0; exit}}}' /tmp/mixkit_ring.html)",
+      "Bash(awk '/1356-preview/{print \"---ID 1356---\"; for\\(i=-30;i<5;i++\\); for\\(i=0;i<3;i++\\) {getline buf; lines[NR]=buf}} *)",
+      "Bash(curl -sI \"https://unlikened-landon-jittery.ngrok-free.dev/audio/ringtones/classic-bell.mp3\" -A \"Mozilla/5.0\")",
+      "Bash(curl -sI \"https://unlikened-landon-jittery.ngrok-free.dev/audio/ringtones/classic-bell.mp3\")",
+      "Bash(curl -sI -H \"ngrok-skip-browser-warning: 1\" \"https://unlikened-landon-jittery.ngrok-free.dev/audio/ringtones/classic-bell.mp3\")",
+      "Bash(node -e \"console.log\\(require\\('D:/dev/jobcount/node_modules/ws/package.json'\\).version\\)\")",
+      "Bash(node -e \"console.log\\(require\\('D:/dev/jobcount/node_modules/openai/package.json'\\).version\\)\")"
+    ]
+  }
+}

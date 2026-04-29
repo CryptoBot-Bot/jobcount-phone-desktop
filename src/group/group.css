@@ -342,3 +342,74 @@ html, body {
   from { transform: translateY(10px); opacity: 0; }
   to   { transform: translateY(0); opacity: 1; }
 }
+
+/* === State-driven participant colors (added 2026-04-28) === */
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0   rgba(16,185,129,0.55); transform: scale(1); }
+  60%  { box-shadow: 0 0 0 9px rgba(16,185,129,0);    transform: scale(1.02); }
+  100% { box-shadow: 0 0 0 0   rgba(16,185,129,0);    transform: scale(1); }
+}
+.pr-dot.state-ringing {
+  background: var(--ok);
+  animation: pulse-ring 1.4s cubic-bezier(0.4,0,0.6,1) infinite;
+}
+.pr-dot.state-connected {
+  background: var(--ok);
+  box-shadow: 0 0 6px rgba(16,185,129,0.4);
+}
+.pr-dot.state-muted {
+  background: #f59e0b;          /* amber-500 — distinct from connected/ringing */
+  box-shadow: 0 0 6px rgba(245,158,11,0.45);
+}
+.pr-dot.state-hungup {
+  background: var(--danger);
+  box-shadow: 0 0 6px rgba(239,68,68,0.45);
+}
+
+/* Subtle row-level theming so the whole row, not just the dot, telegraphs state. */
+.participant-row.state-ringing   { background: rgba(16,185,129,0.04); }
+.participant-row.state-connected { /* default */ }
+.participant-row.state-muted     { background: rgba(245,158,11,0.06); }
+.participant-row.state-hungup    { background: rgba(239,68,68,0.06); opacity: 0.85; }
+
+/* Hung-up sub-line. */
+.pr-sub.hungup { color: var(--danger); font-weight: 600; }
+
+/* Redial action — accent green so it pops against the red row tint. */
+.btn-mini.redial { color: #047857; border-color: #a7f3d0; }
+.btn-mini.redial:hover { background: #d1fae5; }
+
+/* === Contact-picker tab in invite modal (added 2026-04-28) === */
+#inviteContactSearch {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 8px;
+  outline: none;
+}
+#inviteContactSearch:focus { border-color: var(--accent); }
+
+.gis-contact-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 280px; overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 2px;
+}
+.gis-contact-row {
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  display: flex; flex-direction: column;
+  font-size: 13px;
+}
+.gis-contact-row:hover { background: #f3f4f6; }
+.gis-contact-row:disabled { opacity: 0.5; cursor: not-allowed; }
+.gis-contact-name { font-weight: 600; color: var(--fg); }
+.gis-contact-sub  { font-size: 11px; color: var(--muted); margin-top: 1px; }

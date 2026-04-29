@@ -633,6 +633,17 @@ input, textarea, select {
 .pill-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .pill-btn.active { background: var(--danger); color: #fff; border-color: var(--danger); }
 #btnHold.active { background: var(--warn); color: #0f172a; border-color: var(--warn); }
+/* Transcribe shows a "live capturing" green when active — distinct from
+   Mute (red, danger) and Hold (yellow, warn). Soft pulse hints that
+   audio is streaming up to the server. */
+#btnTranscribe.active {
+  background: #16a34a; color: #fff; border-color: #16a34a;
+  animation: transcribe-pulse 2s infinite;
+}
+@keyframes transcribe-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+  50%      { box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.18); }
+}
 
 /* Transfer picker — overlay-ish panel in the phone screen */
 .transfer-picker {
@@ -916,3 +927,47 @@ input, textarea, select {
   color: var(--text); font-weight: 700;
   font-family: monospace; font-size: 11px;
 }
+
+/* === Mic gain + ringer additions (added 2026-04-28) === */
+.slider-row { display: flex; align-items: center; gap: 10px; }
+.slider-row input[type="range"] { flex: 1; accent-color: var(--primary); }
+.slider-row code {
+  min-width: 56px; text-align: right;
+  font-family: monospace; font-size: 12px; color: var(--muted);
+}
+.mic-gain-inline {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px 0;
+}
+.mic-gain-inline .mgi-label {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.mic-gain-inline input[type="range"] { flex: 1; accent-color: var(--primary); }
+.mic-gain-inline code {
+  font-family: monospace; font-size: 11px; color: var(--muted);
+  min-width: 50px; text-align: right;
+}
+
+/* === Group-tab contact quick-pick (added 2026-04-28) === */
+.gis-contact-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 220px; overflow-y: auto;
+  margin: 6px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.gis-contact-row {
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 1px;
+  display: flex; flex-direction: column;
+}
+.gis-contact-row:hover { background: var(--surface); }
+.gis-contact-name { font-weight: 600; font-size: 13px; color: var(--text); }
+.gis-contact-sub  { font-size: 11px; color: var(--muted); margin-top: 1px; }

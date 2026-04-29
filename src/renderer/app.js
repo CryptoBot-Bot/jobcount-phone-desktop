@@ -63,6 +63,8 @@
   const transferPickerBody = document.getElementById("transferPickerBody");
   const btnTransferClose = document.getElementById("btnTransferClose");
   const btnGroup = document.getElementById("btnGroup");
+  const btnTranscribe = document.getElementById("btnTranscribe");
+  const transcribeLabel = document.getElementById("transcribeLabel");
   const dialInput = document.getElementById("dialInput");
   const btnDial = document.getElementById("btnDial");
   const btnBackspace = document.getElementById("btnBackspace");
@@ -79,6 +81,16 @@
   const settingsLabel = document.getElementById("settingsLabel");
   const selectMicrophone = document.getElementById("selectMicrophone");
   const selectSpeaker = document.getElementById("selectSpeaker");
+  const selectRinger = document.getElementById("selectRinger");
+  const selectRingtone = document.getElementById("selectRingtone");
+  const btnPreviewRingtone = document.getElementById("btnPreviewRingtone");
+  const ringerVolumeSlider = document.getElementById("ringerVolumeSlider");
+  const ringerVolumeValue = document.getElementById("ringerVolumeValue");
+  const micGainSlider = document.getElementById("micGainSlider");
+  const micGainValue = document.getElementById("micGainValue");
+  const micGainInline = document.getElementById("micGainInline");
+  const micGainSliderInline = document.getElementById("micGainSliderInline");
+  const micGainValueInline = document.getElementById("micGainValueInline");
   const settingsShop = document.getElementById("settingsShop");
   const settingsDeviceId = document.getElementById("settingsDeviceId");
   const settingsServer = document.getElementById("settingsServer");
@@ -135,6 +147,221 @@
   let queuePollTimer = null;
   let heldPollTimer = null;
 
+  // ─── User audio prefs (loaded from main on boot) ───────────────
+  // ringtoneId      — which of RINGTONES is played on incoming
+  // ringerDeviceId  — sinkId for the ringtone <audio> element (so the
+  //                   ringer can be a separate speaker from the call audio)
+  // micDeviceId     — Twilio Device input (mic) — empty string = default
+  // speakerDeviceId — Twilio Device output (call speaker) — empty = default
+  // micGain         — software mic gain multiplier 0.5–2.0 (default 1.0)
+  // ringerVolume    — 0–1 multiplier for ringtone playback
+  //
+  // We persist saved deviceIds even when the underlying device is currently
+  // unplugged: that way, plugging the user's USB headset back in auto-
+  // reattaches the saved selection (devicechange listener re-applies).
+  let userPrefs = {
+    ringtoneId: "classic-bell",
+    ringerDeviceId: "",
+    micDeviceId: "",
+    speakerDeviceId: "",
+    micGain: 1.0,
+    ringerVolume: 1.0,
+    transcribeTarget: "en",   // "en" | "ru" — live-transcript translation target
+  };
+  async function loadUserPrefs() {
+    try {
+      const p = await window.jobcountPhone.getPrefs();
+      userPrefs = {
+        ringtoneId: typeof p?.ringtoneId === "string" ? p.ringtoneId : "classic-bell",
+        ringerDeviceId: typeof p?.ringerDeviceId === "string" ? p.ringerDeviceId : "",
+        micDeviceId: typeof p?.micDeviceId === "string" ? p.micDeviceId : "",
+        speakerDeviceId: typeof p?.speakerDeviceId === "string" ? p.speakerDeviceId : "",
+        micGain: Number.isFinite(p?.micGain) ? p.micGain : 1.0,
+        ringerVolume: Number.isFinite(p?.ringerVolume)
+          ? Math.max(0, Math.min(1, p.ringerVolume))
+          : 1.0,
+        transcribeTarget: (p?.transcribeTarget === "ru") ? "ru" : "en",
+      };
+    } catch {}
+  }
+  function saveUserPrefs(partial) {
+    Object.assign(userPrefs, partial);
+    try { window.jobcountPhone.savePrefs(partial); } catch {}
+  }
+
+  // ─── Ringtone player ──────────────────────────────────────────
+  // Plays one of five MP3 ringtones served by the paired JobCount server
+  // at /audio/ringtones/. Files are listed in the dir's README.md;
+  // metadata below must match the filenames on disk.
+  //
+  // Audio path:
+  //   <audio src> ─► MediaElementAudioSourceNode
+  //                   ─► GainNode (0–2× boost; slider value × 2)
+  //                   ─► DynamicsCompressorNode (soft limiter — keeps the
+  //                       output from clipping when boost > 1×)
+  //                   ─► MediaStreamDestinationNode
+  //                       ─► <audio srcObject> (setSinkId picks ringer)
+  //
+  // Why the gain × 2 mapping: at slider 100% we want the user to hear a
+  // genuinely loud ring, not just "file's native level". The compressor
+  // soft-clips so distortion is a smooth tail-off rather than harsh
+  // square-wave artifacts.
+  const RINGTONES = [
+    { id: "classic-bell",  name: "Classic Bell",        file: "classic-bell.mp3" },
+    { id: "marimba",       name: "Marimba",             file: "marimba.mp3" },
+    { id: "magic-chime",   name: "Magic Chime",         file: "magic-chime.mp3" },
+    { id: "old-phone",     name: "Old Telephone",       file: "old-phone.mp3" },
+    { id: "urgent-pulse",  name: "Urgent Pulse",        file: "urgent-pulse.mp3" },
+  ];
+
+  const RingtonePlayer = (() => {
+    let ctx = null;
+    let srcAudio = null;   // <audio> playing the mp3 (looped, captured by Web Audio)
+    let srcNode = null;    // MediaElementAudioSourceNode created from srcAudio
+    let gainNode = null;
+    let compressor = null;
+    let dest = null;       // MediaStreamDestinationNode → routed to outAudio
+    let outAudio = null;   // <audio> w/ srcObject; owns setSinkId for ringer device
+    let initFailed = false;
+    // Blob URL cache keyed by ringtone id. We fetch the mp3 bytes once
+    // through the main process (bypasses file://-origin CORS) and reuse
+    // the resulting same-origin blob URL on subsequent plays.
+    const _blobUrlByRingtoneId = new Map();
+
+    function _init() {
+      if (ctx || initFailed) return;
+      try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        srcAudio = new Audio();
+        srcAudio.loop = true;
+        srcAudio.addEventListener("error", () => {
+          const err = srcAudio.error;
+          const code = err ? err.code : "?";
+          const msg = err ? (err.message || "") : "";
+          console.warn(`[ringtone] <audio> error code=${code} msg=${msg} src=${srcAudio.currentSrc || srcAudio.src}`);
+        });
+        // MediaElementAudioSourceNode siphons the audio off the element
+        // so we don't get a duplicate playback to the default output.
+        srcNode = ctx.createMediaElementSource(srcAudio);
+        gainNode = ctx.createGain();
+        gainNode.gain.value = 1;
+        compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.value = -3;   // start limiting near full scale
+        compressor.knee.value = 6;          // gentle onset
+        compressor.ratio.value = 8;         // strong above threshold
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.10;
+        dest = ctx.createMediaStreamDestination();
+        srcNode.connect(gainNode).connect(compressor).connect(dest);
+        outAudio = new Audio();
+        outAudio.srcObject = dest.stream;
+        outAudio.autoplay = true;
+      } catch (e) {
+        console.warn("[ringtone] init failed:", e.message);
+        initFailed = true;
+      }
+    }
+
+    function setVolume(v) {
+      _init();
+      if (!gainNode || !ctx) return;
+      // Slider 0–1 → gain 0–2× (so 100% slider = +6 dB above file native,
+      // soft-limited by the compressor below).
+      const g = Math.max(0, Math.min(1, Number(v) || 0)) * 2;
+      gainNode.gain.setTargetAtTime(g, ctx.currentTime, 0.03);
+    }
+
+    // Fetch the mp3 bytes via the main process and turn them into a
+    // same-origin blob URL. Cached per ringtone id.
+    async function _ensureBlobUrl(meta) {
+      const cached = _blobUrlByRingtoneId.get(meta.id);
+      if (cached) return cached;
+      const baseUrl = (config?.serverUrl || "").replace(/\/+$/, "");
+      if (!baseUrl) return "";
+      const url = `${baseUrl}/audio/ringtones/${meta.file}`;
+      const res = await window.jobcountPhone.fetchBytes(url);
+      if (!res || !res.ok || !res.bytes) {
+        console.warn(`[ringtone] fetchBytes failed for ${meta.file}: HTTP ${res?.status} ${res?.error || ""}`);
+        return "";
+      }
+      // res.bytes comes back as a Uint8Array (Buffer over IPC). Wrap it
+      // in a Blob with the right mime so <audio> picks it up.
+      const ct = res.contentType && res.contentType.startsWith("audio/")
+        ? res.contentType
+        : "audio/mpeg";
+      const blob = new Blob([res.bytes], { type: ct });
+      const blobUrl = URL.createObjectURL(blob);
+      _blobUrlByRingtoneId.set(meta.id, blobUrl);
+      return blobUrl;
+    }
+
+    async function start(ringtoneId, sinkId, volume) {
+      stop();
+      _init();
+      if (!ctx || !srcAudio || !outAudio) return;
+
+      const meta = RINGTONES.find((r) => r.id === ringtoneId) || RINGTONES[0];
+
+      try { if (ctx.state === "suspended") await ctx.resume(); } catch {}
+      setVolume(volume == null ? (userPrefs.ringerVolume ?? 1) : volume);
+
+      // Route the dest stream to the chosen ringer device.
+      if (outAudio.setSinkId) {
+        try { await outAudio.setSinkId(sinkId || ""); }
+        catch (e) { console.warn("[ringtone] setSinkId:", e.message); }
+      }
+
+      const blobUrl = await _ensureBlobUrl(meta);
+      if (!blobUrl) return;
+
+      srcAudio.src = blobUrl;
+      try { await srcAudio.play(); } catch (e) { console.warn("[ringtone] src play:", e.message); }
+      try { await outAudio.play(); } catch (e) { console.warn("[ringtone] out play:", e.message); }
+    }
+
+    function stop() {
+      if (!srcAudio) return;
+      try { srcAudio.pause(); srcAudio.currentTime = 0; } catch {}
+    }
+
+    async function preview(ringtoneId, sinkId, volume) {
+      await start(ringtoneId, sinkId, volume);
+      setTimeout(stop, 3000);
+    }
+
+    return { start, stop, preview, setVolume };
+  })();
+
+  // Phone → contact-name lookup, populated from /phone-device/contacts.
+  // Keyed by the last 10 digits so a "+1 555 123 4567" caller matches a
+  // stored "555-123-4567" contact. Refreshed on connect + every 5 minutes.
+  const _contactNameByPhone = new Map();
+  let _contactsRefreshTimer = null;
+  function _phoneKey(raw) {
+    const digits = String(raw || "").replace(/\D/g, "");
+    return digits.slice(-10); // last 10 = US-style match w/ or w/o country code
+  }
+  function lookupContactName(raw) {
+    const k = _phoneKey(raw);
+    if (!k || k.length < 10) return "";
+    return _contactNameByPhone.get(k) || "";
+  }
+  async function refreshContactNameMap() {
+    try {
+      const data = await apiFetch("/phone-device/contacts");
+      const list = Array.isArray(data?.contacts) ? data.contacts : [];
+      _contactNameByPhone.clear();
+      for (const c of list) {
+        for (const ph of [c.phone, c.phoneAlt]) {
+          const k = _phoneKey(ph);
+          if (k && k.length === 10 && c.name) _contactNameByPhone.set(k, c.name);
+        }
+      }
+    } catch (e) {
+      console.warn("[contacts] name-map refresh failed:", e.message);
+    }
+  }
+
   // ─── Screen helpers ────────────────────────────────────────────
   function showScreen(name) {
     Object.entries(screens).forEach(([k, el]) => {
@@ -157,6 +384,10 @@
 
     const enable = (el, yes) => { el.disabled = !yes; };
 
+    // The inline mic-gain slider is only useful when there's a call to
+    // tweak — keep it visible during dialing / ringing / in-call.
+    if (micGainInline) micGainInline.hidden = (state === "idle");
+
     switch (state) {
       case "idle":
         callLabel.textContent = "Ready";
@@ -171,6 +402,9 @@
         if (btnHold) enable(btnHold, false);
         if (btnTransfer) enable(btnTransfer, false);
         if (btnGroup) enable(btnGroup, false);
+        if (btnTranscribe) enable(btnTranscribe, false);
+        // Auto-stop live transcription when the call ends.
+        try { LiveTranscribe.stop({ silent: true }); } catch {}
         break;
       case "ringing":
         callHero.classList.add("ringing");
@@ -221,6 +455,9 @@
         if (btnHold)     enable(btnHold,     !!currentCustomerCallSid && !currentGroupName);
         if (btnTransfer) enable(btnTransfer, !!currentCustomerCallSid && !currentGroupName);
         if (btnGroup)    enable(btnGroup,    !!currentCustomerCallSid || !!currentGroupName);
+        // Transcribe is 1-on-1 only — group conferences have multiple
+        // remote tracks and would need a different mixing strategy.
+        if (btnTranscribe) enable(btnTranscribe, !!activeCall && !currentGroupName);
         updateGroupButtonLabel();
         break;
     }
@@ -301,6 +538,9 @@ ${bar}\n`
     } catch {}
 
     config = await window.jobcountPhone.getConfig();
+    // Pull saved audio prefs (ringtone, ringer device, mic gain) so the
+    // first incoming call uses them — not the defaults.
+    await loadUserPrefs();
 
     // Once-per-session boot banner — gives us a clean anchor in the
     // log showing exactly what this instance is.
@@ -612,6 +852,11 @@ ${bar}\n`
     device.on("registered", () => {
       setStatus("green", "Online");
       _reconnecting = false;
+      // Suppress Twilio's built-in ring sound — we play our own ringtone
+      // (Web Audio synthesized) so the user can pick a tone and route it
+      // to the Ringer device of their choice. .audio.incoming(false) is
+      // the documented switch for the SDK's default incoming-sound.
+      try { device.audio.incoming(false); } catch {}
     });
     device.on("error", (err) => {
       const code = err?.code ?? err?.twilioError?.code;
@@ -694,28 +939,48 @@ ${bar}\n`
       // Transfer-origin banner in the call hero when this is a handoff.
       callHero.classList.toggle("transfer-in", !!transferFromLabel);
 
+      // Decorate caller display with a known contact's name when we have
+      // one. callTitle goes "John Doe", and the formatted number drops to
+      // the meta line so the agent sees both at a glance.
+      const contactName = lookupContactName(from);
+      const callerDisplay = contactName || formatPhone(from) || from || "Unknown";
+
       let meta;
       if (transferFromLabel) {
         meta = `Transfer from ${transferFromLabel}`;
       } else if (isResume) {
         meta = "Resumed call — tap Answer";
+      } else if (contactName) {
+        // Got a real name → show the formatted number under it.
+        meta = formatPhone(from) || from;
+        if (shopName) meta += ` · ${shopName}`;
       } else {
         meta = shopName || "Tap Answer";
       }
-      setCallState("ringing", { caller: from, meta });
+      setCallState("ringing", { caller: callerDisplay, meta });
+
+      // Start the user's chosen ringtone, routed to the Ringer output.
+      // Stopped on accept / reject / cancel / disconnect.
+      try {
+        RingtonePlayer.start(userPrefs.ringtoneId, userPrefs.ringerDeviceId);
+      } catch (e) { console.warn("[ringtone] start failed:", e.message); }
 
       // Bring the app's window to attention — flash the taskbar, surface
       // it from the tray. Doesn't steal focus. Works whether the app is
       // minimized, hidden, or in the background of another monitor.
       try { window.jobcountPhone.alertIncoming(); } catch {}
 
-      call.on("disconnect", onCallDisconnect);
-      call.on("cancel", onCallDisconnect);
-      call.on("reject", onCallDisconnect);
+      const stopRing = () => { try { RingtonePlayer.stop(); } catch {} };
+      call.on("disconnect", () => { stopRing(); onCallDisconnect(); });
+      call.on("cancel",     () => { stopRing(); onCallDisconnect(); });
+      call.on("reject",     () => { stopRing(); onCallDisconnect(); });
       call.on("accept", () => {
+        stopRing();
         activeDirection = "incoming";
-        setCallState("in-call", { caller: from });
+        setCallState("in-call", { caller: callerDisplay });
         reportBusyState(true);
+        // Apply current mic-gain pref to this call. No-op at 1.00×.
+        applyMicGainToActiveCall(userPrefs.micGain).catch(() => {});
       });
     });
 
@@ -734,6 +999,13 @@ ${bar}\n`
     // waiting and who's parked. These poll every 5s and react to socket
     // events; first-paint is immediate.
     startLiveMonitors();
+
+    // Pre-load contact names so an incoming call's CID is decorated
+    // immediately. Refreshes in the background every 5 min — covers new
+    // customers added from the web UI without restarting the desktop app.
+    refreshContactNameMap();
+    if (_contactsRefreshTimer) clearInterval(_contactsRefreshTimer);
+    _contactsRefreshTimer = setInterval(refreshContactNameMap, 5 * 60 * 1000);
   }
 
   async function connectPresenceSocket() {
@@ -925,14 +1197,16 @@ ${bar}\n`
     const params = { To: raw };
     if (config && config.shopId) params.shopId = config.shopId;
 
+    const dialDisplay = lookupContactName(raw) || formatPhone(raw) || raw;
     try {
       activeCall = await device.connect({ params });
       activeDirection = "outgoing";
-      setCallState("dialing", { to: raw });
+      setCallState("dialing", { to: dialDisplay });
 
       activeCall.on("accept", async () => {
-        setCallState("in-call", { caller: raw });
+        setCallState("in-call", { caller: dialDisplay });
         reportBusyState(true);
+        applyMicGainToActiveCall(userPrefs.micGain).catch(() => {});
         // For outgoing calls, currentCustomerCallSid needs to point at
         // the *child* call (the called party's leg), not our own parent
         // SDK leg. Poll the server briefly to find it — Twilio usually
@@ -948,7 +1222,7 @@ ${bar}\n`
             );
             if (data?.childCallSid) {
               currentCustomerCallSid = data.childCallSid;
-              setCallState("in-call", { caller: raw });
+              setCallState("in-call", { caller: dialDisplay });
               console.log("[outgoing] child call found:", data.childCallSid);
               return;
             }
@@ -984,6 +1258,8 @@ ${bar}\n`
   }
 
   function onCallDisconnect() {
+    // Free the self-acquired mic + audio nodes used for software gain.
+    teardownMicGain();
     activeCall = null;
     activeDirection = null;
     currentCustomerCallSid = null;
@@ -1022,28 +1298,206 @@ ${bar}\n`
   });
 
   // ─── Audio device picker ───────────────────────────────────────
+  let _audioDevicesWired = false;
   async function populateAudioDevices() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const mics = devices.filter(d => d.kind === "audioinput");
       const spks = devices.filter(d => d.kind === "audiooutput");
 
-      selectMicrophone.innerHTML = mics.map((d, i) =>
-        `<option value="${d.deviceId}">${escapeHtml(d.label || `Microphone ${i + 1}`)}</option>`
-      ).join("");
-      selectSpeaker.innerHTML = spks.map((d, i) =>
-        `<option value="${d.deviceId}">${escapeHtml(d.label || `Speaker ${i + 1}`)}</option>`
-      ).join("");
+      // Mic dropdown: prepend "(Default)" so the user can explicitly opt
+      // back into "let the OS pick" rather than being forced onto a
+      // specific device.
+      selectMicrophone.innerHTML =
+        `<option value="">(Default microphone)</option>` +
+        mics.map((d, i) =>
+          `<option value="${d.deviceId}">${escapeHtml(d.label || `Microphone ${i + 1}`)}</option>`
+        ).join("");
+      // Same for the call speaker.
+      selectSpeaker.innerHTML =
+        `<option value="">(Default output)</option>` +
+        spks.map((d, i) =>
+          `<option value="${d.deviceId}">${escapeHtml(d.label || `Speaker ${i + 1}`)}</option>`
+        ).join("");
+      // Ringer dropdown — gets a "(Default)" entry plus every output. The
+      // empty-string value tells our setSinkId path to use the system
+      // default, which matches what users expect when they haven't picked
+      // a ringer device explicitly.
+      if (selectRinger) {
+        selectRinger.innerHTML =
+          `<option value="">(Default output)</option>` +
+          spks.map((d, i) =>
+            `<option value="${d.deviceId}">${escapeHtml(d.label || `Speaker ${i + 1}`)}</option>`
+          ).join("");
+      }
 
-      // Apply on change — Twilio Device exposes audio.setInputDevice/speakerDevices.set.
+      // Restore the three saved device selections.
+      //
+      // If the saved id still exists in the enumeration → reflect it in
+      // the dropdown AND apply it to the underlying transport (Twilio for
+      // mic/speaker, RingtonePlayer.setSinkId at ring-time for ringer).
+      // If the saved id is GONE (USB unplugged) → leave dropdown on the
+      // default entry, but DO NOT erase the saved id from disk. When the
+      // device returns, the devicechange listener re-runs this function
+      // and the user's preferred device auto-reattaches.
+      const micPresent = !!userPrefs.micDeviceId &&
+        mics.some((d) => d.deviceId === userPrefs.micDeviceId);
+      selectMicrophone.value = micPresent ? userPrefs.micDeviceId : "";
+      if (device && device.audio && typeof device.audio.setInputDevice === "function") {
+        try {
+          if (micPresent) await device.audio.setInputDevice(userPrefs.micDeviceId);
+          else if (typeof device.audio.unsetInputDevice === "function") {
+            await device.audio.unsetInputDevice();
+          }
+        } catch (e) { console.warn("[audio] restore mic failed:", e.message); }
+      }
+
+      const spkPresent = !!userPrefs.speakerDeviceId &&
+        spks.some((d) => d.deviceId === userPrefs.speakerDeviceId);
+      selectSpeaker.value = spkPresent ? userPrefs.speakerDeviceId : "";
+      if (device && device.audio && device.audio.speakerDevices &&
+          typeof device.audio.speakerDevices.set === "function") {
+        try {
+          // `set([])` resets to default. Wrapping in try/catch because
+          // some devices reject re-applying the same id.
+          await device.audio.speakerDevices.set(spkPresent ? [userPrefs.speakerDeviceId] : []);
+        } catch (e) { console.warn("[audio] restore speaker failed:", e.message); }
+      }
+
+      if (selectRinger) {
+        const ringerPresent = !!userPrefs.ringerDeviceId &&
+          spks.some((d) => d.deviceId === userPrefs.ringerDeviceId);
+        selectRinger.value = ringerPresent ? userPrefs.ringerDeviceId : "";
+      }
+      // Ringtone dropdown — five MP3 tracks defined in RINGTONES.
+      if (selectRingtone) {
+        selectRingtone.innerHTML = RINGTONES.map((r) =>
+          `<option value="${r.id}">${escapeHtml(r.name)}</option>`
+        ).join("");
+        // Pre-select the saved choice if it still exists, otherwise the
+        // first track (handles users upgrading from the old synth IDs).
+        const savedId = userPrefs.ringtoneId || RINGTONES[0].id;
+        selectRingtone.value = RINGTONES.some((r) => r.id === savedId)
+          ? savedId
+          : RINGTONES[0].id;
+      }
+      // Mic gain — both the Settings slider and the in-call inline slider
+      // mirror the same persisted value.
+      if (micGainSlider) {
+        micGainSlider.value = String(userPrefs.micGain || 1);
+        if (micGainValue) micGainValue.textContent = `${Number(userPrefs.micGain || 1).toFixed(2)}×`;
+      }
+      if (micGainSliderInline) {
+        micGainSliderInline.value = String(userPrefs.micGain || 1);
+        if (micGainValueInline) micGainValueInline.textContent = `${Number(userPrefs.micGain || 1).toFixed(2)}×`;
+      }
+
+      // Wire change handlers exactly once — populateAudioDevices runs on
+      // every device reconnect and we don't want stacked listeners.
+      if (_audioDevicesWired) return;
+      _audioDevicesWired = true;
+
       selectMicrophone.addEventListener("change", async () => {
-        try { await device.audio.setInputDevice(selectMicrophone.value); }
-        catch (e) { console.warn("setInputDevice failed:", e.message); }
+        const id = selectMicrophone.value || "";
+        // Save first so the choice survives even if Twilio rejects this
+        // particular device — e.g. it just got pulled out from under us.
+        saveUserPrefs({ micDeviceId: id });
+        try {
+          if (id) await device.audio.setInputDevice(id);
+          else if (typeof device.audio.unsetInputDevice === "function") {
+            await device.audio.unsetInputDevice();
+          }
+        } catch (e) { console.warn("setInputDevice failed:", e.message); }
       });
       selectSpeaker.addEventListener("change", async () => {
-        try { await device.audio.speakerDevices.set([selectSpeaker.value]); }
+        const id = selectSpeaker.value || "";
+        saveUserPrefs({ speakerDeviceId: id });
+        try { await device.audio.speakerDevices.set(id ? [id] : []); }
         catch (e) { console.warn("speakerDevices.set failed:", e.message); }
       });
+
+      // Plug/unplug awareness. When the OS reports a device list change
+      // (USB headset plugged in, Bluetooth connected, etc.) re-run this
+      // function so the dropdowns refresh AND any saved-but-previously-
+      // missing device gets re-applied automatically.
+      navigator.mediaDevices.addEventListener("devicechange", () => {
+        populateAudioDevices().catch(() => {});
+      });
+
+      if (selectRinger) {
+        selectRinger.addEventListener("change", () => {
+          saveUserPrefs({ ringerDeviceId: selectRinger.value || "" });
+        });
+      }
+      if (selectRingtone) {
+        selectRingtone.addEventListener("change", () => {
+          saveUserPrefs({ ringtoneId: selectRingtone.value });
+        });
+      }
+      if (btnPreviewRingtone) {
+        btnPreviewRingtone.addEventListener("click", () => {
+          // Preview through the selected ringer output + volume so the
+          // user hears exactly what a real incoming call will sound like.
+          RingtonePlayer.preview(
+            selectRingtone?.value || userPrefs.ringtoneId,
+            selectRinger?.value || userPrefs.ringerDeviceId,
+            ringerVolumeSlider ? Number(ringerVolumeSlider.value) : userPrefs.ringerVolume
+          );
+        });
+      }
+
+      // Ringer volume — applies live to the ringtone <audio> element so
+      // the user can drag while previewing and hear it change.
+      if (ringerVolumeSlider) {
+        ringerVolumeSlider.value = String(userPrefs.ringerVolume ?? 1);
+        if (ringerVolumeValue) {
+          ringerVolumeValue.textContent = `${Math.round((userPrefs.ringerVolume ?? 1) * 100)}%`;
+        }
+        ringerVolumeSlider.addEventListener("input", () => {
+          const v = Number(ringerVolumeSlider.value);
+          userPrefs.ringerVolume = v;
+          if (ringerVolumeValue) ringerVolumeValue.textContent = `${Math.round(v * 100)}%`;
+          try { RingtonePlayer.setVolume(v); } catch {}
+          // Debounced save to disk.
+          clearTimeout(ringerVolumeSlider._t);
+          ringerVolumeSlider._t = setTimeout(
+            () => saveUserPrefs({ ringerVolume: v }),
+            250
+          );
+        });
+      }
+
+      // Mic gain — bidirectional sync between the two sliders and live-
+      // applied to any active call (see applyMicGainToActiveCall).
+      const onGainChange = (val, source) => {
+        const g = Math.max(0.5, Math.min(2.0, Number(val) || 1));
+        const text = `${g.toFixed(2)}×`;
+        if (micGainSlider && source !== "settings")  micGainSlider.value = String(g);
+        if (micGainSliderInline && source !== "inline") micGainSliderInline.value = String(g);
+        if (micGainValue)       micGainValue.textContent = text;
+        if (micGainValueInline) micGainValueInline.textContent = text;
+        userPrefs.micGain = g;
+        applyMicGainToActiveCall(g);
+      };
+      const debouncedSave = (() => {
+        let t = null;
+        return () => {
+          if (t) clearTimeout(t);
+          t = setTimeout(() => saveUserPrefs({ micGain: userPrefs.micGain }), 250);
+        };
+      })();
+      if (micGainSlider) {
+        micGainSlider.addEventListener("input", () => {
+          onGainChange(micGainSlider.value, "settings");
+          debouncedSave();
+        });
+      }
+      if (micGainSliderInline) {
+        micGainSliderInline.addEventListener("input", () => {
+          onGainChange(micGainSliderInline.value, "inline");
+          debouncedSave();
+        });
+      }
     } catch (e) {
       console.warn("enumerateDevices failed:", e.message);
     }
@@ -1051,6 +1505,337 @@ ${bar}\n`
 
   function escapeHtml(s) {
     return String(s || "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+  }
+
+  // ─── Mic gain via Web Audio + RTCPeerConnection.replaceTrack ──
+  //
+  // The Twilio Voice SDK doesn't expose a mic gain knob, so we build our
+  // own audio graph (mic → GainNode → MediaStreamDestination) and swap the
+  // call's outgoing audio track for the gain-processed one once the SDK
+  // has put a peer connection on the wire.
+  //
+  // When gain === 1.0, do NOTHING — letting the SDK use its own raw mic
+  // stream is the cleanest default and avoids opening a second mic.
+  // When gain ≠ 1.0, set up the chain and replaceTrack(); subsequent
+  // slider moves only update gainNode.gain.value (no track churn).
+  // Torn down on call end.
+  const _micGain = {
+    ctx: null,
+    callRef: null,   // the Call we last applied gain to
+    gainNode: null,
+    stream: null,    // our self-acquired mic stream (must be stopped on teardown)
+    dest: null,
+  };
+
+  function _findCallPeerConnection(call) {
+    if (!call) return null;
+    const mh = call._mediaHandler;
+    return (
+      mh?.peerConnection ||
+      mh?.connection ||
+      mh?.version?.pc ||
+      mh?._peerConnection ||
+      null
+    );
+  }
+
+  async function applyMicGainToActiveCall(gain) {
+    const call = activeCall;
+    if (!call) return;
+    const pc = _findCallPeerConnection(call);
+    if (!pc) {
+      console.warn("[mic-gain] no peer connection yet — gain will apply on next call");
+      return;
+    }
+    const audioSender = pc.getSenders().find((s) => s.track && s.track.kind === "audio");
+    if (!audioSender) {
+      console.warn("[mic-gain] no audio sender on call");
+      return;
+    }
+
+    // Already wired for this call? Just update the gain — no track swap.
+    if (_micGain.callRef === call && _micGain.gainNode) {
+      _micGain.gainNode.gain.value = gain;
+      return;
+    }
+
+    // Skip the chain entirely at 1.00× — pass-through is what unity gain
+    // already does, and avoiding the extra mic acquisition keeps things
+    // simple for the common case.
+    if (Math.abs(gain - 1.0) < 0.01) return;
+
+    const micId = selectMicrophone?.value || "";
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: micId ? { deviceId: { exact: micId } } : true,
+        video: false,
+      });
+    } catch (e) {
+      console.warn("[mic-gain] getUserMedia failed:", e.message);
+      return;
+    }
+
+    if (!_micGain.ctx) {
+      _micGain.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const ctx = _micGain.ctx;
+    try { if (ctx.state === "suspended") await ctx.resume(); } catch {}
+
+    const src = ctx.createMediaStreamSource(stream);
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = gain;
+    const dest = ctx.createMediaStreamDestination();
+    src.connect(gainNode).connect(dest);
+
+    const newTrack = dest.stream.getAudioTracks()[0];
+    try {
+      await audioSender.replaceTrack(newTrack);
+    } catch (e) {
+      console.warn("[mic-gain] replaceTrack failed:", e.message);
+      try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+      return;
+    }
+
+    _micGain.callRef = call;
+    _micGain.gainNode = gainNode;
+    _micGain.stream = stream;
+    _micGain.dest = dest;
+    console.log(`[mic-gain] applied ${gain.toFixed(2)}× to call`);
+  }
+
+  function teardownMicGain() {
+    try { _micGain.stream && _micGain.stream.getTracks().forEach((t) => t.stop()); } catch {}
+    _micGain.callRef = null;
+    _micGain.gainNode = null;
+    _micGain.stream = null;
+    _micGain.dest = null;
+  }
+
+  // ─── Live Transcribe + Translate ──────────────────────────────
+  //
+  // Streams both audio sides of an active 1-on-1 call to the jobcount
+  // server, which forwards them to OpenAI's Realtime transcription API
+  // and a gpt-4o-mini translator. Captions stream back to a separate
+  // BrowserWindow that subscribes to /phone-live transcript:* events
+  // directly — the audio path goes one way (renderer → server), the
+  // text path goes the other way (server → transcript window).
+  //
+  // Why we capture audio in this renderer (not in the transcript window):
+  //   - The Twilio Voice SDK Call lives here. The remote audio track is
+  //     reachable only via the call's RTCPeerConnection.
+  //   - The transcript window is a separate process — we'd have to ship
+  //     PCM frames cross-process via IPC just to forward them again.
+  //
+  // Format: 16 kHz mono PCM16. We downsample from the AudioContext's
+  // native rate (typically 48 kHz on Windows). 100ms chunks @ 16 kHz =
+  // 1600 samples × 2 bytes = 3.2 KB per side per chunk → ~64 kbit/s
+  // total upstream while transcribing. Comfortable.
+  const LiveTranscribe = (() => {
+    let active = false;
+    let ctx = null;
+    let localStream = null;     // our own getUserMedia handle (must be stopped)
+    let nodes = [];             // every AudioNode we created — stopped on teardown
+    let silentGain = null;      // gain=0 sink so ScriptProcessor fires without audio leaking out
+
+    const TARGET_RATE = 16000;
+
+    // Box-filter downsampler. Float32 in [-1,1] → Int16 PCM. Speech-quality
+    // good enough; better than nearest-neighbour because it averages out
+    // aliasing artifacts on consonants.
+    function _downsamplePCM16(float32, srcRate, dstRate) {
+      if (srcRate === dstRate) {
+        const out = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        return out;
+      }
+      const ratio = srcRate / dstRate;
+      const outLen = Math.floor(float32.length / ratio);
+      const out = new Int16Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const start = Math.floor(i * ratio);
+        const end = Math.min(Math.floor((i + 1) * ratio), float32.length);
+        let sum = 0;
+        for (let j = start; j < end; j++) sum += float32[j];
+        const avg = sum / Math.max(1, end - start);
+        const s = Math.max(-1, Math.min(1, avg));
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      return out;
+    }
+
+    function _attachSide(side, mediaStream) {
+      const src = ctx.createMediaStreamSource(mediaStream);
+      // ScriptProcessorNode is deprecated but still the simplest way to
+      // pull raw PCM frames in a sandboxed renderer without shipping a
+      // separate AudioWorklet file. 4096 frames @ 48k = ~85 ms — well
+      // within OpenAI's recommended 50–250 ms append cadence.
+      const proc = ctx.createScriptProcessor(4096, 1, 1);
+      proc.onaudioprocess = (e) => {
+        if (!active) return;
+        const input = e.inputBuffer.getChannelData(0);
+        const pcm16 = _downsamplePCM16(input, ctx.sampleRate, TARGET_RATE);
+        if (presenceSocket && presenceSocket.connected) {
+          // socket.io binary frames — pcm16.buffer is an ArrayBuffer.
+          presenceSocket.emit("transcript:audio", {
+            side,
+            chunk: pcm16.buffer,
+          });
+        }
+      };
+      src.connect(proc).connect(silentGain);
+      nodes.push(src, proc);
+    }
+
+    async function start({ target } = {}) {
+      if (active) return { ok: true, reused: true };
+      if (!activeCall) throw new Error("No active call");
+      if (!presenceSocket || !presenceSocket.connected) {
+        throw new Error("Server connection not ready");
+      }
+      const pc = _findCallPeerConnection(activeCall);
+      if (!pc) throw new Error("Call has no peer connection yet");
+      const remoteReceiver = pc.getReceivers().find(
+        (r) => r.track && r.track.kind === "audio" && r.track.readyState === "live"
+      );
+      if (!remoteReceiver) throw new Error("No remote audio track on call");
+
+      // Open OUR own mic stream — independent from whatever Twilio is
+      // using or the mic-gain graph. Two getUserMedia handles on the
+      // same device is fine on every modern OS.
+      const micId = userPrefs.micDeviceId || "";
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          audio: micId ? { deviceId: { exact: micId } } : true,
+          video: false,
+        });
+      } catch (e) {
+        throw new Error(`Mic access failed: ${e.message}`);
+      }
+
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      try { if (ctx.state === "suspended") await ctx.resume(); } catch {}
+      // Silent sink so ScriptProcessor fires but no audio leaks to the
+      // speakers — for both LOCAL (would echo your own voice) and REMOTE
+      // (would double-up the call audio you're already hearing).
+      silentGain = ctx.createGain();
+      silentGain.gain.value = 0;
+      silentGain.connect(ctx.destination);
+      nodes.push(silentGain);
+
+      const remoteStream = new MediaStream([remoteReceiver.track]);
+      _attachSide("local",  localStream);
+      _attachSide("remote", remoteStream);
+
+      const callSid = activeCall?.parameters?.CallSid || null;
+      // Ask server to spin up the OpenAI sessions. We need the ack to
+      // confirm the bridge actually opened before we start firing audio.
+      const startResp = await new Promise((resolve) => {
+        presenceSocket.emit(
+          "transcript:start",
+          {
+            callSid,
+            target: target || userPrefs.transcribeTarget || "en",
+            // No sourceHint — let Whisper auto-detect everything,
+            // including code-switching mid-sentence.
+            sourceHint: null,
+          },
+          (resp) => resolve(resp || { ok: false, error: "no ack" })
+        );
+        // Failsafe in case the server never acks.
+        setTimeout(() => resolve({ ok: false, error: "ack timeout" }), 10000);
+      });
+      if (!startResp.ok) {
+        // Tear down what we set up so a retry isn't blocked.
+        _teardownAudioGraph();
+        throw new Error(startResp.error || "Bridge failed to start");
+      }
+
+      active = true;
+      _setButtonActive(true);
+      return { ok: true };
+    }
+
+    function _teardownAudioGraph() {
+      try {
+        for (const n of nodes) { try { n.disconnect(); } catch {} }
+      } finally {
+        nodes = [];
+        silentGain = null;
+      }
+      try { localStream && localStream.getTracks().forEach((t) => t.stop()); } catch {}
+      localStream = null;
+      try { ctx && ctx.close(); } catch {}
+      ctx = null;
+    }
+
+    function stop({ silent } = {}) {
+      if (!active) return;
+      active = false;
+      _setButtonActive(false);
+      if (presenceSocket && presenceSocket.connected) {
+        try { presenceSocket.emit("transcript:stop"); } catch {}
+      }
+      _teardownAudioGraph();
+      if (!silent) {
+        try { window.jobcountPhone.notifyTranscriptWindow({ kind: "stopped" }); } catch {}
+      }
+    }
+
+    function setTarget(target) {
+      const t = (target === "ru" || target === "russian") ? "ru" : "en";
+      saveUserPrefs({ transcribeTarget: t });
+      if (active && presenceSocket && presenceSocket.connected) {
+        presenceSocket.emit("transcript:set-target", { target: t });
+      }
+    }
+
+    function _setButtonActive(on) {
+      if (!btnTranscribe) return;
+      btnTranscribe.classList.toggle("active", !!on);
+      if (transcribeLabel) transcribeLabel.textContent = on ? "Transcribing" : "Transcribe";
+    }
+
+    function isActive() { return active; }
+
+    return { start, stop, setTarget, isActive };
+  })();
+
+  // The transcript window closing is the same intent as the user
+  // toggling Transcribe off — stop streaming audio.
+  if (window.jobcountPhone?.onTranscriptHostEvent) {
+    window.jobcountPhone.onTranscriptHostEvent((evt) => {
+      if (evt?.kind === "window-closed" && LiveTranscribe.isActive()) {
+        LiveTranscribe.stop({ silent: true });
+      }
+    });
+  }
+
+  if (btnTranscribe) {
+    btnTranscribe.addEventListener("click", async () => {
+      if (LiveTranscribe.isActive()) {
+        LiveTranscribe.stop();
+        try { await window.jobcountPhone.closeTranscriptWindow(); } catch {}
+        return;
+      }
+      try {
+        const target = userPrefs.transcribeTarget || "en";
+        // Open the transcript window FIRST so the user gets immediate
+        // feedback even if OpenAI takes a beat to open its sessions.
+        const peerLabel = callTitle?.textContent || "";
+        const callSid = activeCall?.parameters?.CallSid || "";
+        await window.jobcountPhone.openTranscriptWindow({ target, callSid, peerLabel });
+        await LiveTranscribe.start({ target });
+        toast("Live transcription started", "success", 1500);
+      } catch (e) {
+        console.warn("[transcribe] start failed:", e.message);
+        toast(`Transcribe failed: ${e.message}`, "error", 4000);
+        try { await window.jobcountPhone.closeTranscriptWindow(); } catch {}
+      }
+    });
   }
 
   // ─── Settings screen ───────────────────────────────────────────
@@ -1416,8 +2201,8 @@ ${bar}\n`
 
   function renderTransferPeers() {
     if (!transferPickerBody) return;
-    const online = transferPickerPeers.filter((p) => p.online);
-    const offline = transferPickerPeers.filter((p) => !p.online);
+    const online = transferPickerPeers.filter((p) => p.isOnline);
+    const offline = transferPickerPeers.filter((p) => !p.isOnline);
 
     if (!transferPickerPeers.length) {
       transferPickerBody.innerHTML =
@@ -1431,12 +2216,12 @@ ${bar}\n`
     }
 
     const row = (p) => `
-      <button type="button" class="transfer-device ${p.online ? "online" : "offline"}"
-              data-peer-id="${esc(p.id)}" ${p.online ? "" : "disabled"}>
+      <button type="button" class="transfer-device ${p.isOnline ? "online" : "offline"}"
+              data-peer-id="${esc(p._id)}" ${p.isOnline ? "" : "disabled"}>
         <div class="td-dot"></div>
         <div class="td-info">
           <div class="td-name">${esc(p.label || p.hostname || "Unnamed device")}</div>
-          <div class="td-sub">${esc(p.online ? "Online" : "Offline")}${p.hostname && p.label ? " · " + esc(p.hostname) : ""}</div>
+          <div class="td-sub">${esc(p.isOnline ? "Online" : "Offline")}${p.hostname && p.label ? " · " + esc(p.hostname) : ""}</div>
         </div>
       </button>
     `;
@@ -1733,6 +2518,9 @@ ${bar}\n`
   async function refreshGroupInit() {
     if (!groupInitDevices) return;
     groupInitDevices.innerHTML = '<div class="tab-empty">Loading…</div>';
+    // Pull contacts in the background so the search filter has data to
+    // work against — refreshContacts is idempotent + caches.
+    if (!_contactsCache.length) refreshContacts().catch(() => {});
     try {
       const data = await apiFetch("/phone-device/peers");
       const peers = Array.isArray(data?.peers) ? data.peers : [];
@@ -1820,6 +2608,73 @@ ${bar}\n`
     });
   }
 
+  // ─── Contact quick-pick (filter Contacts to add to group invites) ──
+  const groupInitContactSearch = document.getElementById("groupInitContactSearch");
+  const groupInitContactList = document.getElementById("groupInitContactList");
+  function renderGroupInitContactMatches(query) {
+    if (!groupInitContactList) return;
+    const q = String(query || "").toLowerCase().trim();
+    if (!q) {
+      groupInitContactList.hidden = true;
+      groupInitContactList.innerHTML = "";
+      return;
+    }
+    if (!_contactsCache.length) {
+      groupInitContactList.hidden = false;
+      groupInitContactList.innerHTML = '<div class="tab-empty">Loading contacts…</div>';
+      return;
+    }
+    const matches = _contactsCache.filter((c) => {
+      if (!c.phone && !c.phoneAlt) return false;
+      if (c.name && c.name.toLowerCase().includes(q)) return true;
+      if (c.phone && c.phone.includes(q)) return true;
+      if (c.phoneAlt && c.phoneAlt.includes(q)) return true;
+      return false;
+    }).slice(0, 12); // cap at 12 — beyond that the user should type more
+    if (!matches.length) {
+      groupInitContactList.hidden = false;
+      groupInitContactList.innerHTML = '<div class="tab-empty">No matches.</div>';
+      return;
+    }
+    groupInitContactList.hidden = false;
+    groupInitContactList.innerHTML = matches.map((c) => {
+      const phone = c.phone || c.phoneAlt;
+      return `
+        <button type="button" class="gis-contact-row" data-phone="${esc(phone)}" data-name="${esc(c.name || "")}">
+          <div class="gis-contact-name">${esc(c.name || "Contact")}</div>
+          <div class="gis-contact-sub">${esc(formatPhone(phone))}</div>
+        </button>
+      `;
+    }).join("");
+  }
+  if (groupInitContactSearch) {
+    let _searchDeb = null;
+    groupInitContactSearch.addEventListener("input", () => {
+      clearTimeout(_searchDeb);
+      _searchDeb = setTimeout(() => renderGroupInitContactMatches(groupInitContactSearch.value), 100);
+    });
+  }
+  if (groupInitContactList) {
+    groupInitContactList.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-phone]");
+      if (!btn) return;
+      const raw = btn.getAttribute("data-phone");
+      const cleaned = String(raw || "").replace(/[^\d+]/g, "");
+      const norm = /^\d{10}$/.test(cleaned) ? "+1" + cleaned : cleaned;
+      if (!norm) return;
+      if (!_groupInitSelection.numbers.includes(norm)) {
+        _groupInitSelection.numbers.push(norm);
+        renderGroupInitNumbers();
+        updateStartGroupButton();
+        toast(`Added ${btn.getAttribute("data-name") || formatPhone(norm)}`, "success", 1200);
+      }
+      // Clear and re-focus so multi-add is fast.
+      groupInitContactSearch.value = "";
+      groupInitContactList.hidden = true;
+      groupInitContactList.innerHTML = "";
+    });
+  }
+
   // Start Group from the tab (no active customer call involved).
   // Server opens a fresh conference with just this device as admin,
   // then the renderer dials each selected invitee into it.
@@ -1863,6 +2718,18 @@ ${bar}\n`
     presenceSocket.on("call:answered-next", () => bump("answered-next"));
     presenceSocket.on("call:transferred",   () => bump("transferred"));
     presenceSocket.on("call:status",        () => bump("status"));
+
+    // Keep the open Transfer picker live: when another device comes online or
+    // drops, re-fetch /peers so the user doesn't have to close + reopen to
+    // see the change. Same for the Group tab when it's active.
+    const onPresenceChange = () => {
+      if (transferPicker && !transferPicker.hidden) loadTransferPeers();
+      const groupTabActive = document
+        .querySelector('.tab-panel[data-tab-panel="group"]:not([hidden])');
+      if (groupTabActive) refreshGroupInit();
+    };
+    presenceSocket.on("device:online",  onPresenceChange);
+    presenceSocket.on("device:offline", onPresenceChange);
   }
 
   // Bootstrapping for the panels: kick a first refresh as soon as the

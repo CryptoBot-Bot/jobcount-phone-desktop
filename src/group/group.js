@@ -48,7 +48,9 @@
   // ─── State ────────────────────────────────────────────────────
   let currentSnapshot = null;   // last fetched group state from server
   let selfDeviceId = null;      // learned from config
+  let selfShopId = null;        // learned from config
   let pollTimer = null;
+  let groupSocket = null;       // socket.io-client connection to /phone-live
   let leaving = false;          // prevent close-window -> re-leave loop
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -92,11 +94,60 @@
   async function boot() {
     const cfg = await window.jobcountPhone.getConfig();
     selfDeviceId = cfg?.deviceId || null;
+    selfShopId = cfg?.shopId || null;
     if (cfg?.label) selfLabel.textContent = cfg.label;
 
     await refreshGroup();
+
+    // Connect a socket subscription so the snapshot updates on every
+    // server-side state change (participant ringing → connected →
+    // hungup, mute toggles, kicks, etc.) without waiting for the
+    // 3-second poll. The poll is kept as a fallback for socket gaps.
+    await connectGroupSocket();
+
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(refreshGroup, 3000);
+  }
+
+  async function connectGroupSocket() {
+    try {
+      if (groupSocket) { try { groupSocket.disconnect(); } catch {} groupSocket = null; }
+      if (!window.io) { console.warn("socket.io-client missing"); return; }
+      const cfg = await window.jobcountPhone.getConfig();
+      const token = await window.jobcountPhone.getDeviceToken();
+      const serverUrl = (cfg?.serverUrl || "").replace(/\/+$/, "");
+      if (!serverUrl || !token) return;
+
+      groupSocket = window.io(`${serverUrl}/phone-live`, {
+        auth: { deviceToken: token },
+        path: "/socket.io",
+        transports: ["websocket"],
+        upgrade: false,
+        reconnection: true,
+        reconnectionDelay: 1500,
+        reconnectionDelayMax: 15000,
+      });
+
+      // Server pushes the full hydrated snapshot on every state change.
+      groupSocket.on("group:snapshot", (payload) => {
+        if (!payload || payload.groupName !== groupName) return;
+        if (payload.snapshot) {
+          currentSnapshot = payload.snapshot;
+          render();
+        }
+      });
+      groupSocket.on("group:ended", (payload) => {
+        if (!payload || payload.groupName !== groupName) return;
+        statusDot.style.background = "#ef4444";
+        statusDot.style.boxShadow = "";
+        participantList.innerHTML = '<div class="empty">Group has ended.</div>';
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      });
+      groupSocket.on("connect_error", (e) =>
+        console.warn("[group-socket] connect error:", e.message));
+    } catch (e) {
+      console.warn("[group-socket] connect failed:", e.message);
+    }
   }
 
   // ─── Group refresh + render ──────────────────────────────────
@@ -135,7 +186,12 @@
       ? "Group is full"
       : (amAdmin ? "Invite another paired device" : "Only admin can invite");
 
-    // Participant rows.
+    // Participant rows. Each row's color/pulse is driven by `state`:
+    //   ringing   → pulsing green (call placed, awaiting pickup/join)
+    //   connected → solid green
+    //   muted     → solid orange (overrides connected when muted)
+    //   hungup    → red, plus a Redial button (admin only)
+    //   failed    → red (couldn't even place the call)
     participantList.innerHTML = participants.length
       ? participants.map((p) => {
           const isCustomer = p.type === "customer";
@@ -143,44 +199,52 @@
           const isAgent    = p.type === "agent";
           const isSelf     = isAgent && String(p.deviceId) === String(selfDeviceId);
           const isAdmin    = p.role === "admin";
-          const pending    = !!p.pending;
+          const state      = p.state || (p.pending ? "ringing" : "connected");
           const muted      = !!p.muted;
+          const isRinging  = state === "ringing";
+          const isHungup   = state === "hungup" || state === "failed";
 
-          // Action visibility (admin viewer only):
-          // - Customer: no actions (ever)
-          // - Self (admin): Mute/Unmute is allowed; Kick/Promote/Cancel are not
-          //   (use the Leave button at the bottom to exit the group)
-          // - Pending (not self): Cancel only
-          // - Agent (not self, not admin): Promote, Mute, Kick
-          // - Agent (not self, already admin): Mute, Kick
-          // - External: Mute, Kick
-          const showCancel  = amAdmin && pending && !isSelf && !isCustomer;
-          const showKick    = amAdmin && !pending && !isSelf && !isCustomer;
-          const showPromote = amAdmin && !pending && !isSelf && !isCustomer && isAgent && !isAdmin;
-          const showMute    = amAdmin && !pending &&            !isCustomer;
+          // dotClass: visual state.
+          //   customer always shows the customer color UNLESS hungup → red.
+          //   muted+connected overrides connected with orange.
+          let dotClass;
+          if (isHungup) dotClass = "state-hungup";
+          else if (isRinging) dotClass = "state-ringing";
+          else if (isCustomer) dotClass = "customer";
+          else if (muted) dotClass = "state-muted";
+          else dotClass = "state-connected";
 
-          // Target attrs for actions: deviceId for agents, callSid for externals+customer.
+          // Action visibility (admin only, never customer):
+          //   ringing  + not self → Cancel
+          //   hungup   + not self → Redial + Remove
+          //   live     + not self + agent + !admin → Promote, Mute, Kick
+          //   live     + not self + (already admin or external) → Mute, Kick
+          //   live     + self     → Mute (unmute) only
+          const showCancel  = amAdmin && isRinging && !isSelf && !isCustomer;
+          const showRedial  = amAdmin && isHungup  && !isSelf && !isCustomer;
+          const showRemove  = amAdmin && isHungup  && !isSelf && !isCustomer;
+          const showKick    = amAdmin && !isRinging && !isHungup && !isSelf && !isCustomer;
+          const showPromote = amAdmin && !isRinging && !isHungup && !isSelf && !isCustomer && isAgent && !isAdmin;
+          const showMute    = amAdmin && !isRinging && !isHungup &&             !isCustomer;
+
           const idAttrs = isAgent
             ? `data-id="${esc(p.deviceId)}"`
             : `data-callsid="${esc(p.callSid)}"`;
-
-          const dotClass =
-            pending ? "pending" :
-            isCustomer ? "customer" :
-            isExternal || p.online ? "online" : "";
 
           let badge = "";
           if (isCustomer) badge = '<span class="pr-badge customer">CUSTOMER</span>';
           else if (isAdmin) badge = '<span class="pr-badge">ADMIN</span>';
           else if (isExternal) badge = '<span class="pr-badge external">PHONE</span>';
 
-          const subText =
-            pending ? '<div class="pr-sub">Calling…</div>' :
-            muted   ? '<div class="pr-sub muted">Muted</div>' :
-            "";
+          let subText = "";
+          if (isRinging)        subText = '<div class="pr-sub">Calling…</div>';
+          else if (isHungup)    subText = '<div class="pr-sub hungup">Hung up</div>';
+          else if (muted)       subText = '<div class="pr-sub muted">Muted</div>';
 
+          // Row class encodes state for border/bg theming + pulse.
+          const rowState = isHungup ? "hungup" : isRinging ? "ringing" : muted ? "muted" : "connected";
           return `
-          <div class="participant-row ${pending ? "pending" : ""}">
+          <div class="participant-row state-${rowState}">
             <div class="pr-info">
               <div class="pr-dot ${dotClass}"></div>
               <div class="pr-meta">
@@ -190,7 +254,9 @@
               ${badge}
             </div>
             <div class="pr-actions">
-              ${showCancel  ? `<button class="btn-mini kick"   data-action="cancel"  ${idAttrs}>Cancel</button>` : ""}
+              ${showCancel  ? `<button class="btn-mini kick"    data-action="cancel"  ${idAttrs}>Cancel</button>` : ""}
+              ${showRedial  ? `<button class="btn-mini redial"  data-action="redial"  ${idAttrs}>Redial</button>` : ""}
+              ${showRemove  ? `<button class="btn-mini kick"    data-action="kick"    ${idAttrs}>Remove</button>` : ""}
               ${showPromote ? `<button class="btn-mini promote" data-action="promote" ${idAttrs}>Promote</button>` : ""}
               ${showMute    ? `<button class="btn-mini mute"    data-action="mute" data-muted="${muted ? "1" : "0"}" ${idAttrs}>${muted ? "Unmute" : "Mute"}</button>` : ""}
               ${showKick    ? `<button class="btn-mini kick"    data-action="kick"    ${idAttrs}>Kick</button>` : ""}
@@ -232,6 +298,14 @@
           body: { deviceId },
         });
         toast("Admin role transferred", "success");
+      } else if (action === "redial") {
+        // Re-place an outbound call to a previously-hungup participant
+        // (paired device or external number) into the same conference.
+        await apiFetch(`/phone-device/groups/${encodeURIComponent(groupName)}/redial`, {
+          method: "POST",
+          body: deviceId ? { deviceId } : { callSid },
+        });
+        toast("Redialing…", "info", 1500);
       } else if (action === "mute") {
         const currentlyMuted = btn.getAttribute("data-muted") === "1";
         const nextMuted = !currentlyMuted;
@@ -264,14 +338,108 @@
     }
   });
 
-  // ─── Invite picker (tabs: paired device + phone number) ──────
+  // ─── Invite picker (tabs: paired device + contact + phone number) ──
+  const inviteContactBody = document.getElementById("inviteContactBody");
+  const inviteContactSearch = document.getElementById("inviteContactSearch");
+  const inviteContactList = document.getElementById("inviteContactList");
+  let _contactsCache = [];
+
+  async function ensureContactsLoaded() {
+    if (_contactsCache.length) return;
+    try {
+      const data = await apiFetch("/phone-device/contacts");
+      _contactsCache = Array.isArray(data?.contacts) ? data.contacts : [];
+    } catch (e) {
+      console.warn("[group] contacts load failed:", e.message);
+    }
+  }
+
+  function fmtPhoneCompact(raw) {
+    const s = String(raw || "").replace(/[^\d+]/g, "");
+    const us = s.match(/^\+1(\d{3})(\d{3})(\d{4})$/);
+    if (us) return `(${us[1]}) ${us[2]}-${us[3]}`;
+    const bare = s.match(/^(\d{3})(\d{3})(\d{4})$/);
+    if (bare) return `(${bare[1]}) ${bare[2]}-${bare[3]}`;
+    return s || raw;
+  }
+
+  function renderInviteContactMatches(query) {
+    if (!inviteContactList) return;
+    const q = String(query || "").toLowerCase().trim();
+    if (!q) {
+      inviteContactList.innerHTML = '<div class="empty">Type a name or number to filter your contacts.</div>';
+      return;
+    }
+    const matches = _contactsCache.filter((c) => {
+      if (!c.phone && !c.phoneAlt) return false;
+      if (c.name && c.name.toLowerCase().includes(q)) return true;
+      if (c.phone && c.phone.includes(q)) return true;
+      if (c.phoneAlt && c.phoneAlt.includes(q)) return true;
+      return false;
+    }).slice(0, 12);
+    if (!matches.length) {
+      inviteContactList.innerHTML = '<div class="empty">No matches.</div>';
+      return;
+    }
+    inviteContactList.innerHTML = matches.map((c) => {
+      const phone = c.phone || c.phoneAlt;
+      return `
+        <button type="button" class="gis-contact-row"
+                data-phone="${esc(phone)}" data-name="${esc(c.name || "")}">
+          <div class="gis-contact-name">${esc(c.name || "Contact")}</div>
+          <div class="gis-contact-sub">${esc(fmtPhoneCompact(phone))}</div>
+        </button>`;
+    }).join("");
+  }
+
   function switchInviteTab(tab) {
     modalTabs.forEach((t) => t.classList.toggle("active", t.getAttribute("data-tab") === tab));
     inviteDeviceBody.hidden = tab !== "device";
+    if (inviteContactBody) inviteContactBody.hidden = tab !== "contact";
     inviteNumberBody.hidden = tab !== "number";
     if (tab === "number") setTimeout(() => inviteNumberInput.focus(), 50);
+    if (tab === "contact") {
+      ensureContactsLoaded().then(() => {
+        if (inviteContactSearch) {
+          inviteContactSearch.value = "";
+          renderInviteContactMatches("");
+          setTimeout(() => inviteContactSearch.focus(), 50);
+        }
+      });
+    }
   }
   modalTabs.forEach((t) => t.addEventListener("click", () => switchInviteTab(t.getAttribute("data-tab"))));
+
+  // Filter as the admin types.
+  if (inviteContactSearch) {
+    let _icDeb = null;
+    inviteContactSearch.addEventListener("input", () => {
+      clearTimeout(_icDeb);
+      _icDeb = setTimeout(() => renderInviteContactMatches(inviteContactSearch.value), 100);
+    });
+  }
+  // Tap a contact row → fire invite-number with that phone.
+  if (inviteContactList) {
+    inviteContactList.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-phone]");
+      if (!btn) return;
+      const phone = btn.getAttribute("data-phone");
+      const name = btn.getAttribute("data-name") || "";
+      btn.disabled = true;
+      try {
+        await apiFetch(
+          `/phone-device/groups/${encodeURIComponent(groupName)}/invite-number`,
+          { method: "POST", body: { phoneNumber: phone, label: name || phone } }
+        );
+        toast(`Calling ${name || fmtPhoneCompact(phone)}`, "success");
+        invitePicker.hidden = true;
+        refreshGroup();
+      } catch (err) {
+        btn.disabled = false;
+        toast(`Couldn't dial: ${err.message}`, "error");
+      }
+    });
+  }
 
   btnInvite.addEventListener("click", async () => {
     if (btnInvite.disabled) return;

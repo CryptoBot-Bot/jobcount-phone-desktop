@@ -22,12 +22,20 @@ contextBridge.exposeInMainWorld("jobcountPhone", {
   setLabel: (label) => ipcRenderer.invoke("config:set-label", label),
   clearConfig: () => ipcRenderer.invoke("config:clear"),
 
+  // User audio prefs (ringtone, ringer device, mic gain).
+  getPrefs:  () => ipcRenderer.invoke("config:get-prefs"),
+  savePrefs: (partial) => ipcRenderer.invoke("config:save-prefs", partial),
+
   // HTTP
   apiRequest: ({ method, path, body, authenticated } = {}) =>
     ipcRenderer.invoke("api:request", { method, path, body, authenticated }),
   getVoiceToken: () => ipcRenderer.invoke("api:voice-token"),
   pairRedeem: ({ serverUrl, body } = {}) =>
     ipcRenderer.invoke("api:pair-redeem", { serverUrl, body }),
+
+  // Fetch raw bytes via main (bypasses CORS / file:// origin issues).
+  // Returns { ok, status, bytes: Uint8Array, contentType, error }.
+  fetchBytes: (url) => ipcRenderer.invoke("api:fetch-bytes", { url }),
 
   // System info for pairing payload
   systemInfo: () => ipcRenderer.invoke("system:info"),
@@ -40,6 +48,18 @@ contextBridge.exposeInMainWorld("jobcountPhone", {
   // Group conference window
   openGroupWindow:  (payload) => ipcRenderer.invoke("window:group-open",  payload),
   closeGroupWindow: () => ipcRenderer.invoke("window:group-close"),
+
+  // Live transcript window — opened from the in-call Transcribe button.
+  openTranscriptWindow:   (payload) => ipcRenderer.invoke("window:transcript-open",   payload),
+  closeTranscriptWindow:  () => ipcRenderer.invoke("window:transcript-close"),
+  notifyTranscriptWindow: (payload) => ipcRenderer.invoke("window:transcript-notify", payload),
+  // Subscription used INSIDE the transcript window itself to receive
+  // host-side notifications (e.g. "call ended — please close").
+  onTranscriptHostEvent: (handler) => {
+    const listener = (_evt, payload) => { try { handler(payload); } catch {} };
+    ipcRenderer.on("transcript:host-event", listener);
+    return () => ipcRenderer.removeListener("transcript:host-event", listener);
+  },
 
   // System wake events (OS resume / session unlock / user-active).
   // Renderer subscribes and can e.g. re-verify its Twilio connection
