@@ -708,6 +708,55 @@ input, textarea, select {
 .call-hero.transfer-in {
   background: linear-gradient(135deg, #dbeafe, #e0e7ff);
 }
+/* Shop-forwarded calls — caller dialed the shop's main line and the
+   forwarding chain ringed this device. Soft amber tint distinguishes
+   them from direct-to-device calls without yelling at the agent. */
+.call-hero.shop-forwarded {
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+}
+/* Intercom (paired-device-to-device) — light teal so it reads as
+   "internal call", not a customer. */
+.call-hero.intercom {
+  background: linear-gradient(135deg, #ccfbf1, #a5f3fc);
+}
+
+/* Team tab — paired devices with online dot + Call button. */
+.team-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background .12s;
+}
+.team-row:hover:not(.offline) { background: #f1f5f9; }
+.team-row.offline { opacity: .55; cursor: not-allowed; }
+.team-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--soft); flex-shrink: 0;
+}
+.team-row.online .team-dot {
+  background: var(--success, #10b981);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, .18);
+}
+.team-info { flex: 1; min-width: 0; }
+.team-name {
+  font-weight: 600; font-size: 13px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.team-sub {
+  font-size: 11px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.team-call-btn {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; font-weight: 600;
+  background: var(--primary, #2563eb); color: #fff;
+  padding: 6px 12px; border-radius: 8px;
+  border: none; cursor: pointer;
+}
+.team-call-btn:disabled { background: var(--soft, #94a3b8); cursor: not-allowed; }
+.team-call-btn:hover:not(:disabled) { filter: brightness(1.05); }
 .transfer-source {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 10px; font-weight: 700;

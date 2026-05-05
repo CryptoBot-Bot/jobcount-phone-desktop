@@ -17,6 +17,40 @@
 "use strict";
 
 (function () {
+  // ─── Twilio audio-element tracker (must run before Twilio.Device) ──
+  //
+  // The Twilio Voice SDK 2.x creates HTMLAudioElement instances for call
+  // playback but DOES NOT attach them to the DOM. That means
+  // `document.querySelectorAll('audio')` can't see them, which is why our
+  // first cut of the speaker-volume slider had no effect — the .volume
+  // assignment was hitting nothing.
+  //
+  // Fix: instrument HTMLAudioElement.prototype.play so we capture every
+  // audio element the moment it starts playing. Twilio calls .play() on
+  // its output elements per call, so this catches them reliably without
+  // monkey-patching the SDK itself.
+  //
+  // Applied to global state so the speaker-volume code below can read it.
+  const _trackedAudioEls = new Set();
+  (function instrumentHtmlAudio() {
+    try {
+      const proto = HTMLAudioElement.prototype;
+      const origPlay = proto.play;
+      if (origPlay && !origPlay.__phoneTrackerPatched) {
+        const patched = function () {
+          try { _trackedAudioEls.add(this); } catch {}
+          return origPlay.apply(this, arguments);
+        };
+        patched.__phoneTrackerPatched = true;
+        proto.play = patched;
+      }
+    } catch (e) {
+      console.warn("[speaker-vol] HTMLAudioElement.play patch failed:", e.message);
+    }
+  })();
+  // Expose for debugging from devtools.
+  window.__phoneAudioElements = _trackedAudioEls;
+
   // ─── DOM handles ───────────────────────────────────────────────
   const screens = {
     loading:  document.getElementById("screenLoading"),
@@ -91,6 +125,11 @@
   const micGainInline = document.getElementById("micGainInline");
   const micGainSliderInline = document.getElementById("micGainSliderInline");
   const micGainValueInline = document.getElementById("micGainValueInline");
+  const speakerVolumeSlider = document.getElementById("speakerVolumeSlider");
+  const speakerVolumeValue = document.getElementById("speakerVolumeValue");
+  const speakerVolInline = document.getElementById("speakerVolInline");
+  const speakerVolSliderInline = document.getElementById("speakerVolSliderInline");
+  const speakerVolValueInline = document.getElementById("speakerVolValueInline");
   const settingsShop = document.getElementById("settingsShop");
   const settingsDeviceId = document.getElementById("settingsDeviceId");
   const settingsServer = document.getElementById("settingsServer");
@@ -166,6 +205,7 @@
     speakerDeviceId: "",
     micGain: 1.0,
     ringerVolume: 1.0,
+    speakerVolume: 1.0,       // 0–1, how loud the caller is heard during a call
     transcribeTarget: "en",   // "en" | "ru" — live-transcript translation target
   };
   async function loadUserPrefs() {
@@ -179,6 +219,9 @@
         micGain: Number.isFinite(p?.micGain) ? p.micGain : 1.0,
         ringerVolume: Number.isFinite(p?.ringerVolume)
           ? Math.max(0, Math.min(1, p.ringerVolume))
+          : 1.0,
+        speakerVolume: Number.isFinite(p?.speakerVolume)
+          ? Math.max(0, Math.min(1, p.speakerVolume))
           : 1.0,
         transcribeTarget: (p?.transcribeTarget === "ru") ? "ru" : "en",
       };
@@ -379,14 +422,25 @@
     statusText.textContent = text;
   }
 
+  // Track the latest call state so the volume-key handler can route the
+  // press correctly (ring → answer/decline, in-call → double-tap hangup).
+  let _callState = "idle";
+
   function setCallState(state, payload) {
     callHero.classList.remove("ringing", "in-call");
+    _callState = state;
+
+    // Tell main to capture/release the hardware volume keys. Capturing
+    // suppresses the Windows shell volume reaction; releasing returns
+    // normal volume control to the user when no call is active.
+    try { window.jobcountPhone.setCallActive(state !== "idle"); } catch {}
 
     const enable = (el, yes) => { el.disabled = !yes; };
 
     // The inline mic-gain slider is only useful when there's a call to
     // tweak — keep it visible during dialing / ringing / in-call.
     if (micGainInline) micGainInline.hidden = (state === "idle");
+    if (speakerVolInline) speakerVolInline.hidden = (state === "idle");
 
     switch (state) {
       case "idle":
@@ -896,6 +950,9 @@ ${bar}\n`
       const shopName = getP("shopName") || "";
       const isResume = getP("resume") === "1";
       const transferFromLabel = getP("transferFromLabel") || "";
+      const isShopForwarded = getP("isShopForwarded") === "1";
+      const isIntercom = getP("isIntercom") === "1";
+      const intercomFromLabel = getP("intercomFromLabel") || "";
       // For resumes from an outbound-hold, `call.parameters.From` is the
       // shop's own caller ID (since the held leg was originally dialed
       // FROM the shop). Prefer the counterpartyPhone that resume-connect
@@ -936,17 +993,34 @@ ${bar}\n`
       currentCustomerCallSid =
         getP("customerCallSid") || call.parameters.CallSid || null;
 
-      // Transfer-origin banner in the call hero when this is a handoff.
+      // Origin banners on the call hero. transfer-in is set by the existing
+      // transfer flow; shop-forwarded marks calls that came in through the
+      // shop's main number; intercom marks paired-device-to-device calls.
       callHero.classList.toggle("transfer-in", !!transferFromLabel);
+      callHero.classList.toggle("shop-forwarded", !!isShopForwarded);
+      callHero.classList.toggle("intercom", !!isIntercom);
 
       // Decorate caller display with a known contact's name when we have
       // one. callTitle goes "John Doe", and the formatted number drops to
       // the meta line so the agent sees both at a glance.
       const contactName = lookupContactName(from);
-      const callerDisplay = contactName || formatPhone(from) || from || "Unknown";
+      let callerDisplay;
+      if (isIntercom) {
+        callerDisplay = intercomFromLabel || "Teammate";
+      } else {
+        callerDisplay = contactName || formatPhone(from) || from || "Unknown";
+      }
 
       let meta;
-      if (transferFromLabel) {
+      if (isIntercom) {
+        meta = "📞 Intercom · paired device";
+      } else if (isShopForwarded) {
+        // Shop's main line is forwarding this caller to the agent. Make
+        // sure the agent can tell at a glance — without this they could
+        // mistake it for a direct-dial customer call.
+        const who = contactName ? formatPhone(from) || from : (formatPhone(from) || from || "");
+        meta = "🏪 Shop Reception" + (shopName ? ` · ${shopName}` : "") + (who ? ` · ${who}` : "");
+      } else if (transferFromLabel) {
         meta = `Transfer from ${transferFromLabel}`;
       } else if (isResume) {
         meta = "Resumed call — tap Answer";
@@ -981,6 +1055,8 @@ ${bar}\n`
         reportBusyState(true);
         // Apply current mic-gain pref to this call. No-op at 1.00×.
         applyMicGainToActiveCall(userPrefs.micGain).catch(() => {});
+        // Apply current speaker-volume pref. No-op at 1.0 (browser default).
+        applySpeakerVolumeToActiveCall(userPrefs.speakerVolume);
       });
     });
 
@@ -1207,6 +1283,7 @@ ${bar}\n`
         setCallState("in-call", { caller: dialDisplay });
         reportBusyState(true);
         applyMicGainToActiveCall(userPrefs.micGain).catch(() => {});
+        applySpeakerVolumeToActiveCall(userPrefs.speakerVolume);
         // For outgoing calls, currentCustomerCallSid needs to point at
         // the *child* call (the called party's leg), not our own parent
         // SDK leg. Poll the server briefly to find it — Twilio usually
@@ -1392,6 +1469,18 @@ ${bar}\n`
         if (micGainValueInline) micGainValueInline.textContent = `${Number(userPrefs.micGain || 1).toFixed(2)}×`;
       }
 
+      // Speaker volume — same dual-slider pattern as mic gain.
+      const _spkV = userPrefs.speakerVolume ?? 1;
+      const _spkVText = `${Math.round(_spkV * 100)}%`;
+      if (speakerVolumeSlider) {
+        speakerVolumeSlider.value = String(_spkV);
+        if (speakerVolumeValue) speakerVolumeValue.textContent = _spkVText;
+      }
+      if (speakerVolSliderInline) {
+        speakerVolSliderInline.value = String(_spkV);
+        if (speakerVolValueInline) speakerVolValueInline.textContent = _spkVText;
+      }
+
       // Wire change handlers exactly once — populateAudioDevices runs on
       // every device reconnect and we don't want stacked listeners.
       if (_audioDevicesWired) return;
@@ -1496,6 +1585,42 @@ ${bar}\n`
         micGainSliderInline.addEventListener("input", () => {
           onGainChange(micGainSliderInline.value, "inline");
           debouncedSave();
+        });
+      }
+
+      // Speaker volume — bidirectional sync between Settings + inline,
+      // applied live to whatever audio element the Twilio SDK is using
+      // for the active call.
+      const onSpeakerVolChange = (val, source) => {
+        const v = Math.max(0, Math.min(1, Number(val) || 0));
+        const text = `${Math.round(v * 100)}%`;
+        if (speakerVolumeSlider && source !== "settings") speakerVolumeSlider.value = String(v);
+        if (speakerVolSliderInline && source !== "inline") speakerVolSliderInline.value = String(v);
+        if (speakerVolumeValue) speakerVolumeValue.textContent = text;
+        if (speakerVolValueInline) speakerVolValueInline.textContent = text;
+        userPrefs.speakerVolume = v;
+        applySpeakerVolumeToActiveCall(v);
+      };
+      const debouncedSaveSpk = (() => {
+        let t = null;
+        return () => {
+          if (t) clearTimeout(t);
+          t = setTimeout(
+            () => saveUserPrefs({ speakerVolume: userPrefs.speakerVolume }),
+            250
+          );
+        };
+      })();
+      if (speakerVolumeSlider) {
+        speakerVolumeSlider.addEventListener("input", () => {
+          onSpeakerVolChange(speakerVolumeSlider.value, "settings");
+          debouncedSaveSpk();
+        });
+      }
+      if (speakerVolSliderInline) {
+        speakerVolSliderInline.addEventListener("input", () => {
+          onSpeakerVolChange(speakerVolSliderInline.value, "inline");
+          debouncedSaveSpk();
         });
       }
     } catch (e) {
@@ -1610,6 +1735,95 @@ ${bar}\n`
     _micGain.gainNode = null;
     _micGain.stream = null;
     _micGain.dest = null;
+  }
+
+  // ─── Speaker volume (inbound audio) ───────────────────────────
+  //
+  // Twilio Voice SDK has no public API for setting output volume — it
+  // manages HTMLAudioElement nodes internally. Setting `.volume` on those
+  // elements is harmless and the standard browser-level loudness control,
+  // so we probe every place an active audio element might live and apply
+  // the value to all of them.
+  //
+  // Touched surfaces (any one is enough; doing all is defensive):
+  //   • call._mediaHandler.audio                  (older SDKs)
+  //   • call._mediaHandler._remoteAudio
+  //   • Every <audio> in the DOM with a live MediaStream srcObject
+  //     (Twilio appends one per call). HTMLAudioElement.volume in [0,1]
+  //     is the well-defined loudness multiplier.
+  function _isLiveAudioEl(el) {
+    if (!(el instanceof HTMLAudioElement)) return false;
+    const ss = el.srcObject;
+    if (!ss || typeof ss.getAudioTracks !== "function") return false;
+    const tracks = ss.getAudioTracks();
+    if (!tracks.length) return false;
+    // A track in 'ended' state means the call hangup already finished.
+    return tracks.some((t) => t.readyState !== "ended");
+  }
+
+  function _collectActiveAudioElements(call) {
+    const out = new Set();
+
+    // 1. Best source: the audio elements we tracked via the .play() patch.
+    //    These are Twilio's internal-but-detached output elements that
+    //    `document.querySelectorAll('audio')` will NEVER find, because
+    //    Twilio Voice SDK 2.x doesn't attach them to the document.
+    for (const el of _trackedAudioEls) {
+      if (_isLiveAudioEl(el)) out.add(el);
+      else _trackedAudioEls.delete(el); // prune dead refs as we go
+    }
+
+    // 2. Probe known SDK paths in case the tracker missed something
+    //    (e.g. the .play() patch was installed too late). Cheap defensive
+    //    coverage — nothing here is documented public API.
+    if (call) {
+      const mh = call._mediaHandler;
+      if (mh) {
+        if (mh.audio instanceof HTMLAudioElement) out.add(mh.audio);
+        if (mh._remoteAudio instanceof HTMLAudioElement) out.add(mh._remoteAudio);
+        if (mh.outputElement instanceof HTMLAudioElement) out.add(mh.outputElement);
+      }
+    }
+
+    // 3. Catch-all: any <audio> in the document with a live stream.
+    //    Mostly redundant for Twilio call audio, but harmless and helps
+    //    if any future code path attaches its element to the DOM.
+    document.querySelectorAll("audio").forEach((el) => {
+      if (_isLiveAudioEl(el)) out.add(el);
+    });
+
+    return out;
+  }
+
+  function applySpeakerVolumeToActiveCall(volume) {
+    const v = Math.max(0, Math.min(1, Number(volume)));
+    const apply = (label) => {
+      const targets = _collectActiveAudioElements(activeCall);
+      let hits = 0;
+      targets.forEach((el) => {
+        try {
+          el.volume = v;
+          if (v > 0 && el.muted) el.muted = false;
+          hits += 1;
+        } catch {}
+      });
+      console.log(`[speaker-vol] ${label}: applied ${(v * 100).toFixed(0)}% to ${hits} element(s) (tracked=${_trackedAudioEls.size})`);
+      return hits;
+    };
+
+    const hits = apply("immediate");
+
+    // The play()-patch fires when Twilio calls .play(), which can be
+    // slightly *after* the call:accept event. If we didn't catch any
+    // elements yet, retry a couple times over the next ~1s.
+    if (hits === 0 && activeCall) {
+      let attempts = 0;
+      const tick = setInterval(() => {
+        attempts += 1;
+        const got = apply(`retry ${attempts}`);
+        if (got > 0 || attempts >= 5) clearInterval(tick);
+      }, 250);
+    }
   }
 
   // ─── Live Transcribe + Translate ──────────────────────────────
@@ -2169,12 +2383,39 @@ ${bar}\n`
 
   // ─── Transfer button + device picker ───────────────────────────
   //
-  // Blind transfer: caller is sent to the chosen paired device via a fresh
-  // <Dial><Client> TwiML. The server stamps the original device's label so
-  // the target sees "Transfer from <label>" when the call lands. If nobody
-  // answers within the configured ring window, the fallback TwiML dumps
-  // the customer back into the shop queue — no dropped calls.
+  // Press Transfer → picker opens, customer stays bridged with the agent.
+  // Pick a destination → the customer is placed on hold (music) and then
+  // the /transfer endpoint redirects them to ring the chosen device.
+  // Holding the customer DURING the picker step would cut the agent off
+  // from the customer mid-conversation, which the agent typically doesn't
+  // want — the destination might bounce back to them.
   let transferPickerPeers = [];
+
+  // Place the active customer on hold and resolve once our SDK leg has
+  // actually disconnected (so a follow-on device.connect() doesn't race).
+  // Returns the held customer's CallSid, or null if no call was active.
+  async function holdCurrentCustomerAndWait() {
+    if (!activeCall || !currentCustomerCallSid) return null;
+    const sid = currentCustomerCallSid;
+
+    const disconnected = new Promise((resolve) => {
+      const done = () => resolve();
+      try {
+        activeCall.once("disconnect", done);
+        activeCall.once("cancel", done);
+      } catch {}
+      // Safety net: even if no event lands, don't hang forever.
+      setTimeout(done, 3000);
+    });
+
+    await apiFetch(
+      `/phone-device/calls/${encodeURIComponent(sid)}/hold`,
+      { method: "POST" }
+    );
+    await disconnected;
+    setTimeout(refreshHeld, 600);
+    return sid;
+  }
 
   function openTransferPicker() {
     if (!transferPicker || !transferPickerBody) return;
@@ -2260,33 +2501,49 @@ ${bar}\n`
       if (!btn || btn.disabled) return;
       const targetDeviceId = btn.getAttribute("data-peer-id");
       if (!targetDeviceId) return;
-      if (!currentCustomerCallSid) {
+      if (!activeCall || !currentCustomerCallSid) {
         toast("No active call to transfer.", "error");
         closeTransferPicker();
         return;
       }
 
-      // Lock the whole picker while the REST call is in flight so the user
-      // can't double-click a second device and race two transfers.
+      // Snapshot the customer's CallSid BEFORE /hold tears down our SDK
+      // leg — onCallDisconnect clears currentCustomerCallSid in the
+      // process, and we still need it for the /transfer step below.
+      const sidToTransfer = currentCustomerCallSid;
+
+      // Lock the whole picker while the REST calls are in flight so the
+      // agent can't double-click a second device and race two transfers.
       transferPickerBody.querySelectorAll("button[data-peer-id]")
         .forEach((b) => { b.disabled = true; });
       btn.classList.add("loading");
 
-      const sidToTransfer = currentCustomerCallSid;
       try {
+        // Step 1 — park the customer on hold music. This also disconnects
+        // our SDK leg so the agent's call hero returns to idle.
+        await holdCurrentCustomerAndWait();
+
+        // Step 2 — redirect the now-held customer's TwiML to dial the
+        // chosen device. twilioClient.calls(sid).update() works whether
+        // the customer is bridged, in a queue, or anywhere else.
         await apiFetch(
           `/phone-device/calls/${encodeURIComponent(sidToTransfer)}/transfer`,
           { method: "POST", body: { targetDeviceId } }
         );
         toast("Transferring call…", "success", 2000);
         closeTransferPicker();
-        // Twilio will tear our leg down once the customer is redirected.
-        // onCallDisconnect handles UI reset.
+        // Held list will refresh on its own from the disconnect, but the
+        // customer is being pulled out — fire one more refresh so the row
+        // disappears once the transfer takes effect.
+        setTimeout(refreshHeld, 800);
       } catch (err) {
         btn.classList.remove("loading");
         // Re-enable online peers so user can try a different device.
         transferPickerBody.querySelectorAll("button[data-peer-id].online")
           .forEach((b) => { b.disabled = false; });
+        // If /hold succeeded but /transfer failed, the customer is now
+        // parked on hold. The Held list will surface them; the agent can
+        // resume manually.
         toast(`Transfer failed: ${err.message}`, "error");
       }
     });
@@ -2361,6 +2618,7 @@ ${bar}\n`
     tabPanels.forEach((p) => { p.hidden = p.getAttribute("data-tab-panel") !== name; });
     if (name === "recents")  refreshRecents();
     if (name === "contacts") refreshContacts();
+    if (name === "team")     refreshTeam();
     if (name === "group")    refreshGroupInit();
   }
   tabButtons.forEach((b) => b.addEventListener("click", () => switchTab(b.getAttribute("data-tab"))));
@@ -2505,6 +2763,144 @@ ${bar}\n`
     switchTab("keypad");
     // Focus the dial button so Enter would fire it.
     setTimeout(() => { try { btnDial.focus(); } catch {} }, 80);
+  }
+
+  // ─── Team tab — paired-device intercom ───────────────────────
+  //
+  // Lists every other paired desktop device in this shop with a live
+  // online dot. Clicking Call dials that device via Twilio Voice SDK
+  // <Client> routing — the server's /webhooks/twilio/voice/outgoing
+  // handler treats `To: "client:device_<id>"` as an intercom and
+  // returns <Dial><Client>...</Client></Dial>.
+  const teamList = document.getElementById("teamList");
+  const teamSearch = document.getElementById("teamSearch");
+  const btnTeamRefresh = document.getElementById("btnTeamRefresh");
+  let _teamCache = [];
+
+  async function refreshTeam() {
+    if (!teamList) return;
+    teamList.innerHTML = '<div class="tab-empty">Loading paired devices…</div>';
+    try {
+      const data = await apiFetch("/phone-device/peers");
+      _teamCache = Array.isArray(data?.peers) ? data.peers : [];
+      renderTeam(teamSearch?.value?.trim() || "");
+    } catch (e) {
+      teamList.innerHTML = `<div class="tab-empty">Couldn't load devices: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderTeam(filter) {
+    if (!teamList) return;
+    const f = (filter || "").toLowerCase();
+    const rows = f
+      ? _teamCache.filter((p) =>
+          (p.label || "").toLowerCase().includes(f) ||
+          (p.hostname || "").toLowerCase().includes(f)
+        )
+      : _teamCache;
+
+    if (!rows.length) {
+      teamList.innerHTML = '<div class="tab-empty">No other paired devices in this shop.</div>';
+      return;
+    }
+
+    teamList.innerHTML = rows.map((p) => {
+      const cls = p.isOnline ? "team-row online" : "team-row offline";
+      const sub = [
+        p.hostname || "",
+        p.platform || "",
+        p.isOnline ? "Online" : "Offline",
+      ].filter(Boolean).join(" · ");
+      return `
+        <div class="${cls}" data-team-id="${esc(p._id)}">
+          <span class="team-dot"></span>
+          <div class="team-info">
+            <div class="team-name">${esc(p.label || "Device")}</div>
+            <div class="team-sub">${esc(sub)}</div>
+          </div>
+          <button class="team-call-btn" data-team-call="${esc(p._id)}" ${p.isOnline ? "" : "disabled"}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            Call
+          </button>
+        </div>`;
+    }).join("");
+  }
+
+  if (teamSearch) {
+    let _teamDeb;
+    teamSearch.addEventListener("input", () => {
+      clearTimeout(_teamDeb);
+      _teamDeb = setTimeout(() => renderTeam(teamSearch.value.trim()), 120);
+    });
+  }
+  if (btnTeamRefresh) {
+    btnTeamRefresh.addEventListener("click", () => refreshTeam());
+  }
+  if (teamList) {
+    teamList.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-team-call]");
+      if (!btn) return;
+      if (btn.disabled) return;
+      const id = btn.getAttribute("data-team-call");
+      const peer = _teamCache.find((p) => p._id === id);
+      if (!peer) return;
+      await dialPeer(peer);
+    });
+  }
+
+  async function dialPeer(peer) {
+    if (!device) return;
+
+    // If a customer call is currently bridged, park them on hold first
+    // so they hear hold music while we go talk to a teammate. After the
+    // intercom ends the agent resumes the customer from the Held list.
+    if (activeCall) {
+      try {
+        const heldSid = await holdCurrentCustomerAndWait();
+        if (heldSid) {
+          toast(
+            `Customer on hold — calling ${esc(peer.label || "teammate")}`,
+            "success",
+            2500
+          );
+        }
+      } catch (e) {
+        toast(`Couldn't put on hold: ${e.message}`, "error");
+        return;
+      }
+    }
+
+    const params = {
+      To: `client:device_${peer._id}`,
+      // `fromLabel` arrives in the receiver's customParameters as
+      // intercomFromLabel so they see who's calling.
+      fromLabel: (config && (config.label || config.deviceId)) || "Teammate",
+    };
+    if (config && config.shopId) params.shopId = config.shopId;
+
+    try {
+      activeCall = await device.connect({ params });
+      activeDirection = "outgoing";
+      setCallState("dialing", { to: peer.label || "Device" });
+      // Mark the hero as an intercom too on the caller side so it
+      // reads "Intercom" rather than a regular outbound call.
+      callHero.classList.add("intercom");
+
+      activeCall.on("accept", () => {
+        setCallState("in-call", { caller: peer.label || "Device" });
+        reportBusyState(true);
+        applyMicGainToActiveCall(userPrefs.micGain).catch(() => {});
+        applySpeakerVolumeToActiveCall(userPrefs.speakerVolume);
+      });
+      activeCall.on("disconnect", onCallDisconnect);
+      activeCall.on("cancel",     onCallDisconnect);
+      activeCall.on("reject",     onCallDisconnect);
+    } catch (e) {
+      console.warn("[team] intercom dial failed:", e.message);
+      callMeta.textContent = `Couldn't reach ${peer.label || "device"}: ${e.message}`;
+      activeCall = null;
+      setCallState("idle");
+    }
   }
 
   // ─── Group initiation tab ────────────────────────────────────
@@ -2782,6 +3178,62 @@ ${bar}\n`
         try { await reconnectDevice(); }
         catch { showReconnectButton(true); }
       });
+    });
+  } catch {}
+
+  // ─── Hardware volume keys: answer / decline / hangup ────────────
+  //
+  // VolumeUp     — answer a ringing call (single tap).
+  // VolumeDown×2 — within 600ms while ringing → decline.
+  // VolumeDown×2 — within 600ms during a live call → hang up.
+  //
+  // Both destructive actions require a double-tap so an accidental press
+  // can't drop a call or reject a customer. A single VolumeDown is a
+  // no-op (just records the timestamp for double-tap detection).
+  //
+  // The key event itself is captured by main via globalShortcut, which
+  // also suppresses the OS's normal volume change. When the call is idle,
+  // main has unregistered the shortcut and the keys behave normally.
+  let _lastVolDownAt = 0;
+  const DOUBLE_TAP_MS = 600;
+  try {
+    window.jobcountPhone.onVolumeKey?.((evt) => {
+      const key = evt && evt.key;
+      if (!key) return;
+
+      // VolumeUp during ringing answers immediately. Single tap is fine
+      // for the non-destructive action — no risk in accepting twice.
+      if (_callState === "ringing" && key === "VolumeUp") {
+        if (activeCall) {
+          try { activeCall.accept(); } catch (e) { console.warn("[volkey] accept failed:", e.message); }
+        }
+        _lastVolDownAt = 0;
+        return;
+      }
+
+      // VolumeDown is the destructive key in BOTH ringing and live-call
+      // states — single tap arms, second tap within 600ms commits.
+      if (key === "VolumeDown" &&
+          (_callState === "ringing" || _callState === "in-call" || _callState === "dialing")) {
+        const now = Date.now();
+        if (now - _lastVolDownAt <= DOUBLE_TAP_MS) {
+          _lastVolDownAt = 0;
+          if (!activeCall) return;
+          if (_callState === "ringing") {
+            try { activeCall.reject(); } catch (e) { console.warn("[volkey] reject failed:", e.message); }
+            activeCall = null;
+            setCallState("idle");
+          } else {
+            try { activeCall.disconnect(); } catch (e) { console.warn("[volkey] disconnect failed:", e.message); }
+          }
+        } else {
+          _lastVolDownAt = now;
+        }
+        return;
+      }
+
+      // Any other combo resets the double-tap timer.
+      _lastVolDownAt = 0;
     });
   } catch {}
 

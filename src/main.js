@@ -10,7 +10,7 @@
 //      app — a phone should always be reachable even when minimized.
 //   5. Request microphone permission for the embedded WebRTC voice SDK.
 
-const { app, BrowserWindow, ipcMain, safeStorage, Tray, Menu, nativeImage, shell, dialog, session, net, powerMonitor, clipboard } = require("electron");
+const { app, BrowserWindow, ipcMain, safeStorage, Tray, Menu, nativeImage, shell, dialog, session, net, powerMonitor, clipboard, globalShortcut } = require("electron");
 // Auto-updater pulls new versions from GitHub Releases. Loaded lazily
 // so a missing dep (when running from source during dev) doesn't crash
 // the app on startup — we only need it in packaged builds.
@@ -443,6 +443,53 @@ ipcMain.handle("system:info", () => ({
   // pairing, this only controls the visual indicator.
   jobcountEnv: (process.env.JOBCOUNT_ENV || "prod").toLowerCase(),
 }));
+
+// ─── Volume-key capture for ring/answer/decline/hangup ─────────────
+//
+// When the renderer reports a call is active (ringing / dialing / in-call),
+// we register Electron globalShortcut for VolumeUp / VolumeDown. That
+// captures the keys system-wide AND suppresses the OS-level volume change
+// (Electron's globalShortcut consumes the keypress before Windows shell
+// reacts). Each press is forwarded to the renderer over IPC; the renderer
+// owns the policy: VolumeUp answers a ring, VolumeDown declines, and a
+// double-tap of VolumeDown during a live call hangs up.
+//
+// As soon as the call ends we unregister, so the user's hardware volume
+// keys go back to controlling Windows volume. Without this dynamic
+// register/unregister, the volume keys would be hijacked all the time —
+// users want their normal volume control when nothing is happening.
+let _volumeKeysRegistered = false;
+function setVolumeKeysActive(active) {
+  if (active && !_volumeKeysRegistered) {
+    try {
+      const sendKey = (key) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        try { mainWindow.webContents.send("phone:volume-key", { key, ts: Date.now() }); }
+        catch (e) { console.warn("[volume-key] send failed:", e.message); }
+      };
+      const okUp   = globalShortcut.register("VolumeUp",   () => sendKey("VolumeUp"));
+      const okDown = globalShortcut.register("VolumeDown", () => sendKey("VolumeDown"));
+      _volumeKeysRegistered = okUp || okDown;
+      if (!okUp)   console.warn("[volume-key] failed to register VolumeUp");
+      if (!okDown) console.warn("[volume-key] failed to register VolumeDown");
+    } catch (e) {
+      console.warn("[volume-key] register error:", e.message);
+    }
+  } else if (!active && _volumeKeysRegistered) {
+    try { globalShortcut.unregister("VolumeUp"); } catch {}
+    try { globalShortcut.unregister("VolumeDown"); } catch {}
+    _volumeKeysRegistered = false;
+  }
+}
+ipcMain.handle("phone:set-call-active", (_evt, active) => {
+  setVolumeKeysActive(!!active);
+  return { ok: true };
+});
+// Belt-and-braces: any registered shortcuts must be released on quit so
+// they don't outlive the app and steal the user's volume keys.
+app.on("will-quit", () => {
+  try { globalShortcut.unregisterAll(); } catch {}
+});
 
 ipcMain.handle("window:minimize-to-tray", () => {
   if (mainWindow) mainWindow.hide();

@@ -13,7 +13,14 @@
       "Bash(curl -sI \"https://unlikened-landon-jittery.ngrok-free.dev/audio/ringtones/classic-bell.mp3\")",
       "Bash(curl -sI -H \"ngrok-skip-browser-warning: 1\" \"https://unlikened-landon-jittery.ngrok-free.dev/audio/ringtones/classic-bell.mp3\")",
       "Bash(node -e \"console.log\\(require\\('D:/dev/jobcount/node_modules/ws/package.json'\\).version\\)\")",
-      "Bash(node -e \"console.log\\(require\\('D:/dev/jobcount/node_modules/openai/package.json'\\).version\\)\")"
+      "Bash(node -e \"console.log\\(require\\('D:/dev/jobcount/node_modules/openai/package.json'\\).version\\)\")",
+      "Bash(xargs grep *)",
+      "Bash(grep -E \"\\\\.ejs$\")",
+      "Bash(node -e \"require\\('./utils/callTranscriptEmail'\\); require\\('./services/twilio/callAnalysisService'\\); console.log\\('OK'\\);\")",
+      "Bash(OPENAI_API_KEY=sk-x TWILIO_ACCOUNT_SID=ACx TWILIO_AUTH_TOKEN=x node -e \"const m=require\\('./services/twilio/callAnalysisService'\\); console.log\\('analysis exports:', Object.keys\\(m\\)\\); const e=require\\('./utils/callTranscriptEmail'\\); console.log\\('email exports:', Object.keys\\(e\\)\\);\")",
+      "Bash(OPENAI_API_KEY=sk-x TWILIO_ACCOUNT_SID=ACx TWILIO_AUTH_TOKEN=x node *)",
+      "Bash(node --check D:/dev/jobcount/routes/twilioVoice.js)",
+      "Bash(node *)"
     ]
   }
 }

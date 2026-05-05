@@ -70,6 +70,16 @@ contextBridge.exposeInMainWorld("jobcountPhone", {
     return () => ipcRenderer.removeListener("system:wake", listener);
   },
 
+  // Hardware volume keys → answer / decline / hangup. Renderer toggles
+  // capture on/off based on call state so the keys only get hijacked
+  // when there's an actual call to control.
+  setCallActive: (active) => ipcRenderer.invoke("phone:set-call-active", !!active),
+  onVolumeKey: (handler) => {
+    const listener = (_evt, payload) => { try { handler(payload); } catch {} };
+    ipcRenderer.on("phone:volume-key", listener);
+    return () => ipcRenderer.removeListener("phone:volume-key", listener);
+  },
+
   // Auto-update: electron-updater pulls new installers from GitHub
   // Releases. The renderer shows progress + prompts the user to install.
   onUpdateState: (handler) => {
