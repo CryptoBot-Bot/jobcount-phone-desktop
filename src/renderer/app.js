@@ -1243,10 +1243,17 @@ ${bar}\n`
   // ─── Calls ─────────────────────────────────────────────────────
   btnAnswer.addEventListener("click", () => {
     if (!activeCall) return;
+    // Stop the ringtone immediately on click — Voice SDK's "accept" event
+    // (which also stops the ringtone) fires only after the WebRTC handshake
+    // completes, which can be several seconds in multi-dyno deployments.
+    // RingtonePlayer.stop() is idempotent, so the event-handler stop below
+    // remains a safe fallback for non-button accept paths.
+    try { RingtonePlayer.stop(); } catch {}
     activeCall.accept();
   });
   btnReject.addEventListener("click", () => {
     if (!activeCall) return;
+    try { RingtonePlayer.stop(); } catch {}
     activeCall.reject();
     activeCall = null;
     setCallState("idle");
