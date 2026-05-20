@@ -624,6 +624,31 @@ ${bar}\n`
       });
     }, 5 * 60 * 1000);
 
+    // Idle-only nightly self-reload — belt & suspenders against any slow
+    // resource drift (V8 heap fragmentation, Chromium audio/WebRTC state,
+    // OS network-stack fatigue) that accumulates over days of uptime. We
+    // check every 30 minutes and reload ONLY if: uptime > ~23 hours, no
+    // active call, no incoming ring, and the user is in a quiet local
+    // hour (3–5 AM). reconnectDevice/socket reconnects will fire fresh
+    // automatically after reload (the renderer re-runs boot()).
+    const _bootAt = Date.now();
+    let _selfReloadDone = false;
+    setInterval(() => {
+      if (_selfReloadDone) return;
+      const upHours = (Date.now() - _bootAt) / 3600000;
+      if (upHours < 23) return;
+      const hr = new Date().getHours();
+      if (hr < 3 || hr >= 5) return;
+      if (activeCall) return;
+      // _callState is the current UI state — set to "ringing" while a
+      // call is incoming. Be defensive in case it's undefined.
+      const st = (typeof _callState === "string" ? _callState : "");
+      if (st === "ringing" || st === "in-call") return;
+      _selfReloadDone = true;
+      console.log("[self-reload] idle window reached, reloading renderer for a fresh start");
+      try { location.reload(); } catch (e) { console.warn("[self-reload] failed:", e.message); }
+    }, 30 * 60 * 1000);
+
     if (!config.hasToken) {
       showScreen("pairing");
       setStatus("gray", "Unpaired");
@@ -1654,6 +1679,8 @@ ${bar}\n`
   const _micGain = {
     ctx: null,
     callRef: null,   // the Call we last applied gain to
+    src: null,       // MediaStreamSource — must be disconnected on teardown so
+                     // it doesn't pile up in the persistent ctx graph across calls
     gainNode: null,
     stream: null,    // our self-acquired mic stream (must be stopped on teardown)
     dest: null,
@@ -1730,6 +1757,7 @@ ${bar}\n`
     }
 
     _micGain.callRef = call;
+    _micGain.src = src;
     _micGain.gainNode = gainNode;
     _micGain.stream = stream;
     _micGain.dest = dest;
@@ -1737,8 +1765,16 @@ ${bar}\n`
   }
 
   function teardownMicGain() {
+    // Stop the self-acquired mic AND disconnect every audio node we
+    // attached to the persistent _micGain.ctx. Without the .disconnect()s
+    // the graph grew by 3 nodes per call — the audio chain bloated and
+    // hangup cleanup queued behind it after long uptime.
     try { _micGain.stream && _micGain.stream.getTracks().forEach((t) => t.stop()); } catch {}
+    try { _micGain.src      && _micGain.src.disconnect(); }      catch {}
+    try { _micGain.gainNode && _micGain.gainNode.disconnect(); } catch {}
+    try { _micGain.dest     && _micGain.dest.disconnect(); }     catch {}
     _micGain.callRef = null;
+    _micGain.src = null;
     _micGain.gainNode = null;
     _micGain.stream = null;
     _micGain.dest = null;
@@ -1848,10 +1884,12 @@ ${bar}\n`
   //   - The transcript window is a separate process — we'd have to ship
   //     PCM frames cross-process via IPC just to forward them again.
   //
-  // Format: 16 kHz mono PCM16. We downsample from the AudioContext's
-  // native rate (typically 48 kHz on Windows). 100ms chunks @ 16 kHz =
-  // 1600 samples × 2 bytes = 3.2 KB per side per chunk → ~64 kbit/s
-  // total upstream while transcribing. Comfortable.
+  // Format: 24 kHz mono PCM16. We downsample from the AudioContext's
+  // native rate (typically 48 kHz on Windows). OpenAI GA realtime
+  // requires audio input rate >= 24000 — 16 kHz is rejected outright.
+  // 100ms chunks @ 24 kHz = 2400 samples × 2 bytes = 4.8 KB per side
+  // per chunk → ~96 kbit/s total upstream while transcribing.
+  // The server-side bridge declares the same 24000 in its session config.
   const LiveTranscribe = (() => {
     let active = false;
     let ctx = null;
@@ -1859,7 +1897,7 @@ ${bar}\n`
     let nodes = [];             // every AudioNode we created — stopped on teardown
     let silentGain = null;      // gain=0 sink so ScriptProcessor fires without audio leaking out
 
-    const TARGET_RATE = 16000;
+    const TARGET_RATE = 24000;
 
     // Box-filter downsampler. Float32 in [-1,1] → Int16 PCM. Speech-quality
     // good enough; better than nearest-neighbour because it averages out
