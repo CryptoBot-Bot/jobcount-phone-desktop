@@ -118,6 +118,46 @@ input, textarea, select {
   50%      { opacity: 0.3; }
 }
 
+/* ── Presence mode toggle (Active / Passive) ─────────────────────────── */
+.presence-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 10px 16px 0 16px;
+}
+.presence-seg {
+  display: inline-flex; padding: 3px; gap: 3px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.presence-opt {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none; cursor: pointer; background: transparent;
+  color: var(--muted); font-size: 12px; font-weight: 700;
+  padding: 5px 14px; border-radius: 999px; transition: all .15s ease;
+}
+.presence-opt:disabled { cursor: default; opacity: .55; }
+.presence-opt .presence-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor; opacity: .5;
+}
+/* Selected = Active → green; selected = Passive → amber */
+#btnPresenceActive.is-selected {
+  background: var(--bg-panel); color: var(--success);
+  box-shadow: 0 1px 3px rgba(15,23,42,.12);
+}
+#btnPresenceActive.is-selected .presence-dot {
+  opacity: 1; box-shadow: 0 0 6px rgba(25,135,84,.7);
+}
+#btnPresencePassive.is-selected {
+  background: var(--bg-panel); color: #b45309;
+  box-shadow: 0 1px 3px rgba(15,23,42,.12);
+}
+#btnPresencePassive.is-selected .presence-dot { opacity: 1; }
+.presence-hint {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  text-align: right; flex: 1; min-width: 0;
+}
+.presence-bar.is-passive .presence-hint { color: #b45309; }
+
 /* Reconnect button — shown when auto-recovery fails. Docked next to the
  * status pill so the user sees it without looking around. */
 .btn-reconnect {
@@ -866,6 +906,7 @@ input, textarea, select {
 .toast-msg.success { border-left: 3px solid var(--success); }
 .toast-msg.error   { border-left: 3px solid var(--danger); }
 .toast-msg.info    { border-left: 3px solid var(--primary); }
+.toast-msg.warn    { border-left: 3px solid var(--warn); }
 @keyframes toastIn {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: translateY(0); }

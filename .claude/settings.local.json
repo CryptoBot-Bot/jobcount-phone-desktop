@@ -20,7 +20,14 @@
       "Bash(OPENAI_API_KEY=sk-x TWILIO_ACCOUNT_SID=ACx TWILIO_AUTH_TOKEN=x node -e \"const m=require\\('./services/twilio/callAnalysisService'\\); console.log\\('analysis exports:', Object.keys\\(m\\)\\); const e=require\\('./utils/callTranscriptEmail'\\); console.log\\('email exports:', Object.keys\\(e\\)\\);\")",
       "Bash(OPENAI_API_KEY=sk-x TWILIO_ACCOUNT_SID=ACx TWILIO_AUTH_TOKEN=x node *)",
       "Bash(node --check D:/dev/jobcount/routes/twilioVoice.js)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(npm --version)",
+      "Bash(npx --version)",
+      "Read(//d/dev/**)",
+      "Bash(npx --yes create-expo-app@latest jobcount-phone-mobile --template blank-typescript)",
+      "Bash(npx expo *)",
+      "Bash(npm install *)",
+      "Bash(npx expo-doctor *)"
     ]
   }
 }

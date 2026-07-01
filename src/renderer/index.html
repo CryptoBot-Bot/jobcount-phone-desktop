@@ -111,6 +111,19 @@
     <!-- ═══ SCREEN: softphone ═══ -->
     <section id="screenPhone" class="screen" hidden>
 
+      <!-- ═══ Presence mode: Active rings on inbound / Passive stays silent ═══ -->
+      <div class="presence-bar" id="presenceBar" hidden>
+        <div class="presence-seg" role="group" aria-label="Phone status">
+          <button type="button" class="presence-opt is-selected" id="btnPresenceActive" data-mode="active">
+            <span class="presence-dot"></span> Active
+          </button>
+          <button type="button" class="presence-opt" id="btnPresencePassive" data-mode="passive">
+            <span class="presence-dot"></span> Passive
+          </button>
+        </div>
+        <div class="presence-hint" id="presenceHint">Ringing on incoming calls</div>
+      </div>
+
       <!-- Call hero -->
       <div class="call-hero" id="callHero">
         <div class="call-label" id="callLabel">Ready</div>

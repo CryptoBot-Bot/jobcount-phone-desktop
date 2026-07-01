@@ -80,6 +80,10 @@
   let pairShopNameResolved = "";
 
   // Phone
+  const presenceBar = document.getElementById("presenceBar");
+  const btnPresenceActive = document.getElementById("btnPresenceActive");
+  const btnPresencePassive = document.getElementById("btnPresencePassive");
+  const presenceHint = document.getElementById("presenceHint");
   const callHero = document.getElementById("callHero");
   const callLabel = document.getElementById("callLabel");
   const callTitle = document.getElementById("callTitle");
@@ -146,6 +150,8 @@
   let callStartedAt = null;
   let tokenRefreshTimer = null;
   let presenceSocket = null;   // socket.io-client connection to /phone-live
+  let presenceMode = "active"; // "active" (rings on inbound) | "passive" (silent inbound)
+  let _presenceSaving = false; // guards against overlapping toggle POSTs
 
   // Current customer call SID (for Hold/Hangup via REST). Set when a call
   // arrives (from customParameters) or on accept for outgoing.
@@ -661,6 +667,11 @@ ${bar}\n`
     setStatus("yellow", "Connecting");
     setCallState("idle");
 
+    // Restore the Active/Passive toggle to the server's authoritative value.
+    // Independent of the Twilio connection — the toggle should be usable even
+    // if the voice device is momentarily offline.
+    restorePresenceMode();
+
     try {
       await connectTwilioDevice();
     } catch (e) {
@@ -1150,6 +1161,9 @@ ${bar}\n`
           _socketEverConnected = true;
         } else {
           console.log("[socket] reconnected");
+          // Re-sync the toggle: if presence mode was changed server-side
+          // (e.g. from another window) while we were disconnected, catch up.
+          restorePresenceMode();
         }
       });
       presenceSocket.on("disconnect", (reason) => {
@@ -1180,6 +1194,15 @@ ${bar}\n`
           reason: payload.reason || "",
           expiresAt: Date.now() + (Number(payload.expiresInMs) || 10000),
         };
+      });
+
+      // Server pushes this when THIS device's presence mode changes (e.g. the
+      // toggle was flipped in another window of the same device). Reflect it
+      // without persisting — the server already holds the authoritative value.
+      presenceSocket.on("device:presence-mode", (payload) => {
+        if (!payload || String(payload.deviceId) !== String(config?.deviceId)) return;
+        console.log("[presence] device:presence-mode →", payload.mode);
+        setPresenceMode(payload.mode, { persist: false });
       });
     } catch (e) {
       console.warn("connectPresenceSocket failed:", e.message);
@@ -1350,6 +1373,97 @@ ${bar}\n`
       callMeta.textContent = e.message || "Try again";
     }
   });
+
+  // ─── Presence mode (Active / Passive) ──────────────────────────
+  //
+  // Active  → this phone rings on inbound shop-reception calls (default).
+  // Passive → inbound ring blast skips this phone; everything else (dialing
+  //           out, in-call controls, Answer Next from the Live Queue,
+  //           coworker transfers/group invites) keeps working.
+  //
+  // The server (PhoneDevice.presenceMode in Mongo) is the source of truth —
+  // /webhooks/twilio/voice/live-reception reads it per call. We keep this
+  // local mirror only so the toggle reflects state instantly; on boot we
+  // pull the authoritative value from /phone-device/info.
+
+  function applyPresenceModeUI(mode) {
+    const passive = mode === "passive";
+    if (presenceBar) {
+      presenceBar.hidden = false;
+      presenceBar.classList.toggle("is-passive", passive);
+    }
+    if (btnPresenceActive) btnPresenceActive.classList.toggle("is-selected", !passive);
+    if (btnPresencePassive) btnPresencePassive.classList.toggle("is-selected", passive);
+    if (presenceHint) {
+      presenceHint.textContent = passive
+        ? "Silent on incoming — only Active phones ring"
+        : "Ringing on incoming calls";
+    }
+  }
+
+  // Change presence mode. persist=true means the user clicked the toggle, so
+  // we optimistically update the UI, POST to the server, and roll back on
+  // failure. persist=false is for reflecting an authoritative value we just
+  // learned (boot restore or a server-pushed device:presence-mode event).
+  async function setPresenceMode(mode, { persist = true } = {}) {
+    const next = mode === "passive" ? "passive" : "active";
+    if (!persist) {
+      presenceMode = next;
+      applyPresenceModeUI(next);
+      return;
+    }
+    if (_presenceSaving || next === presenceMode) return;
+    const previous = presenceMode;
+    _presenceSaving = true;
+    presenceMode = next;
+    applyPresenceModeUI(next);
+    // Disable both while the request is in flight to prevent double-clicks.
+    if (btnPresenceActive) btnPresenceActive.disabled = true;
+    if (btnPresencePassive) btnPresencePassive.disabled = true;
+    try {
+      await apiFetch("/phone-device/presence-mode", {
+        method: "POST",
+        body: { mode: next },
+      });
+      toast(
+        next === "passive"
+          ? "Passive — this phone won't ring on incoming calls"
+          : "Active — this phone rings on incoming calls",
+        next === "passive" ? "warn" : "success"
+      );
+    } catch (e) {
+      // Roll back — the server didn't accept it, so the ring behavior didn't
+      // actually change. Better to show the true state than lie to the user.
+      presenceMode = previous;
+      applyPresenceModeUI(previous);
+      toast("Couldn't update status: " + (e.message || "server error"), "error");
+    } finally {
+      _presenceSaving = false;
+      if (btnPresenceActive) btnPresenceActive.disabled = false;
+      if (btnPresencePassive) btnPresencePassive.disabled = false;
+    }
+  }
+
+  // Pull the authoritative presence mode from the server on boot so the
+  // toggle matches what /live-reception will actually do. Never throws.
+  async function restorePresenceMode() {
+    try {
+      const info = await apiFetch("/phone-device/info");
+      const mode = info?.device?.presenceMode === "passive" ? "passive" : "active";
+      setPresenceMode(mode, { persist: false });
+    } catch (e) {
+      console.warn("[presence-mode] restore failed:", e.message);
+      // Fall back to showing the default so the bar isn't stuck hidden.
+      setPresenceMode(presenceMode, { persist: false });
+    }
+  }
+
+  if (btnPresenceActive) {
+    btnPresenceActive.addEventListener("click", () => setPresenceMode("active"));
+  }
+  if (btnPresencePassive) {
+    btnPresencePassive.addEventListener("click", () => setPresenceMode("passive"));
+  }
 
   // Report our own busy-state to the server so /voice/live-reception
   // knows to skip ringing us when a new call lands during a
